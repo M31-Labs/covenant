@@ -110,6 +110,41 @@ func TestUncappedMintRejected(t *testing.T) {
 	}
 }
 
+func TestSourceUncappedMintRejected(t *testing.T) {
+	src, err := os.ReadFile("../examples/_bad_uncapped_mint.cov")
+	if err != nil {
+		t.Fatalf("read _bad_uncapped_mint.cov: %v", err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, lowerDiags := ir.Lower(tree, src)
+	for _, d := range lowerDiags {
+		if d.Severity == diag.Error {
+			t.Fatalf("lower error: %s", d.Teach())
+		}
+	}
+
+	diagnostics, report := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "MINT_UNCAPPED" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want MINT_UNCAPPED diagnostic, got: %v", diagnostics)
+	}
+	if report.SupplyHardCapped {
+		t.Error("uncapped source mint must not report SupplyHardCapped")
+	}
+	if strings.Contains(report.Badge(), "a holder can verify") {
+		t.Errorf("unsafe badge must not print holder-verification footer:\n%s", report.Badge())
+	}
+}
+
 // TestNoQuorumRejected checks that a mint with Quorum==0 produces MINT_NO_QUORUM.
 func TestNoQuorumRejected(t *testing.T) {
 	c := &ir.Contract{
@@ -136,6 +171,178 @@ func TestNoQuorumRejected(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("want MINT_NO_QUORUM diagnostic, got: %v", diagnostics)
+	}
+}
+
+func TestNetZeroDrainRejected(t *testing.T) {
+	src, err := os.ReadFile("../examples/_bad_net_zero_drain.cov")
+	if err != nil {
+		t.Fatalf("read _bad_net_zero_drain.cov: %v", err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, lowerDiags := ir.Lower(tree, src)
+	for _, d := range lowerDiags {
+		if d.Severity == diag.Error {
+			t.Fatalf("lower error: %s", d.Teach())
+		}
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "TRANSITION_SUPPLY_OP" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want TRANSITION_SUPPLY_OP diagnostic, got: %v", diagnostics)
+	}
+}
+
+func TestTransitionCannotMoveFromNonCaller(t *testing.T) {
+	c := &ir.Contract{
+		Name: "DrainToken",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Transitions: []ir.Transition{
+			{
+				Name:      "steal",
+				Authority: "caller owns amount",
+				Body: []ir.Op{
+					{Kind: ir.OpMove, Ledger: "balances", From: "victim", To: "caller", Amount: "amount", Line: 4},
+				},
+				Line: 4,
+			},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "TRANSITION_NOT_CALLER_FUNDED" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want TRANSITION_NOT_CALLER_FUNDED diagnostic, got: %v", diagnostics)
+	}
+}
+
+func TestUnsupportedAuthorityRejected(t *testing.T) {
+	c := &ir.Contract{
+		Name: "OpenToken",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Transitions: []ir.Transition{
+			{
+				Name:      "unguarded",
+				Authority: "caller == owner",
+				Body: []ir.Op{
+					{Kind: ir.OpMove, Ledger: "balances", From: "caller", To: "to", Amount: "amount", Line: 4},
+				},
+				Line: 4,
+			},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "AUTH_UNSUPPORTED" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want AUTH_UNSUPPORTED diagnostic, got: %v", diagnostics)
+	}
+}
+
+func TestMintCannotDebit(t *testing.T) {
+	c := &ir.Contract{
+		Name: "MintDrain",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Mints: []ir.Mint{
+			{
+				Name:    "issue",
+				Cap:     1_000_000,
+				Unit:    "TOK",
+				Quorum:  2,
+				Signers: []string{"alice", "bob"},
+				Body: []ir.Op{
+					{Kind: ir.OpDebit, Account: "victim", Amount: "amount", Line: 4},
+				},
+				Line: 4,
+			},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "MINT_NON_CREDIT_OP" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want MINT_NON_CREDIT_OP diagnostic, got: %v", diagnostics)
+	}
+}
+
+func TestBurnMustDebitCaller(t *testing.T) {
+	c := &ir.Contract{
+		Name: "BurnDrain",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Burns: []ir.Burn{
+			{
+				Name:      "retire",
+				Authority: "caller owns amount",
+				Body: []ir.Op{
+					{Kind: ir.OpDebit, Account: "victim", Amount: "amount", Line: 4},
+				},
+				Line: 4,
+			},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "BURN_NOT_CALLER_FUNDED" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want BURN_NOT_CALLER_FUNDED diagnostic, got: %v", diagnostics)
 	}
 }
 

@@ -13,6 +13,7 @@ var (
 	seq      = grammargen.Seq
 	choice   = grammargen.Choice
 	repeat   = grammargen.Repeat
+	optional = grammargen.Optional
 	field    = grammargen.Field
 	str      = grammargen.Str
 	pat      = grammargen.Pat
@@ -83,8 +84,10 @@ func CovenantGrammar() *grammargen.Grammar {
 	g.Define("mint_decl", seq(
 		str("mint"),
 		field("name", sym("identifier")),
-		str("cap"),
-		field("cap", sym("int")),
+		optional(seq(
+			str("cap"),
+			field("cap", sym("int")),
+		)),
 		field("type", sym("type")),
 		str("by"),
 		str("approval"),

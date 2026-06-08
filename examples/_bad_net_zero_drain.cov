@@ -1,0 +1,14 @@
+contract NetZeroDrain {
+    ledger balances: TOKEN
+    supply total: TOKEN
+    invariant conserves(balances, total)
+
+    mint issue cap 1_000_000 TOKEN by approval 2 of { a, b } {
+        credit recipient : amount
+    }
+
+    transition drain(victim: Account, amount: TOKEN) by (caller owns amount) {
+        debit victim : amount
+        credit caller : amount
+    }
+}

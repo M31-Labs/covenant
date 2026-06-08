@@ -125,6 +125,35 @@ func TestThesis_StaticGuarantees(t *testing.T) {
 		}
 	})
 
+	t.Run("source_uncapped_mint_rejected", func(t *testing.T) {
+		c, lowerDiags := parseAndLower(t, "examples/_bad_uncapped_mint.cov")
+
+		if hasCode(lowerDiags, "PARSE_SYNTAX_ERROR") {
+			t.Fatal("_bad_uncapped_mint.cov must parse so Check can teach MINT_UNCAPPED")
+		}
+
+		checkDiags, report := check.Check(c)
+		if !hasCode(checkDiags, "MINT_UNCAPPED") {
+			t.Errorf("want MINT_UNCAPPED; got: %v", checkDiags)
+		}
+		if report.SupplyHardCapped {
+			t.Error("uncapped mint must not report SupplyHardCapped")
+		}
+	})
+
+	t.Run("net_zero_drain_rejected", func(t *testing.T) {
+		c, lowerDiags := parseAndLower(t, "examples/_bad_net_zero_drain.cov")
+
+		if hasCode(lowerDiags, "PARSE_SYNTAX_ERROR") {
+			t.Fatal("_bad_net_zero_drain.cov must parse so Check can reject the capability shape")
+		}
+
+		checkDiags, _ := check.Check(c)
+		if !hasCode(checkDiags, "TRANSITION_SUPPLY_OP") {
+			t.Errorf("want TRANSITION_SUPPLY_OP; got: %v", checkDiags)
+		}
+	})
+
 	// -------------------------------------------------------------------------
 	// 3. IR-level rejections: contracts that can't be expressed syntactically
 	//    (uncapped mint, no-quorum mint, unconserved supply) are still rejected

@@ -43,6 +43,30 @@ func TestLowerCapOverflow(t *testing.T) {
 	}
 }
 
+func TestLowerMissingMintCap(t *testing.T) {
+	src, err := os.ReadFile("../examples/_bad_uncapped_mint.cov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, diags := Lower(tree, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected lower diagnostics: %v", diags)
+	}
+	if len(c.Mints) != 1 {
+		t.Fatalf("mints=%+v", c.Mints)
+	}
+	if c.Mints[0].Cap != -1 {
+		t.Fatalf("missing cap should lower to Cap=-1, got %+v", c.Mints[0])
+	}
+	if c.Mints[0].Unit != "TOKEN" {
+		t.Fatalf("unit=%q, want TOKEN", c.Mints[0].Unit)
+	}
+}
+
 func TestLowerFlagship(t *testing.T) {
 	src, _ := os.ReadFile("../examples/community_token.cov")
 	tree, _ := grammar.Parse(src)

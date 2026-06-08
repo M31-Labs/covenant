@@ -1,0 +1,9 @@
+contract Uncapped {
+    ledger balances: TOKEN
+    supply total: TOKEN
+    invariant conserves(balances, total)
+
+    mint issue TOKEN by approval 2 of { a, b } {
+        credit recipient : amount
+    }
+}

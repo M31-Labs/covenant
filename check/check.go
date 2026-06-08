@@ -2,6 +2,7 @@ package check
 
 import (
 	"fmt"
+	"strings"
 
 	"m31labs.dev/covenant/diag"
 	"m31labs.dev/covenant/ir"
@@ -37,6 +38,7 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 			ds = append(ds, *d)
 		}
 	}
+	ds = append(ds, checkCapabilityShapes(c)...)
 
 	// --- 2. Mint-safety checks ---
 
@@ -216,4 +218,125 @@ func checkConservationCoverage(c *ir.Contract) []diag.Diagnostic {
 	}
 
 	return ds
+}
+
+// checkCapabilityShapes keeps v1's dangerous primitives in their declared
+// capability lanes. Net conservation is not enough: debit+credit inside a
+// transition can conserve total supply while still draining another account.
+func checkCapabilityShapes(c *ir.Contract) []diag.Diagnostic {
+	var ds []diag.Diagnostic
+
+	for _, tr := range c.Transitions {
+		authAmount, ok := callerOwnsAmount(tr.Authority)
+		if !ok {
+			ds = append(ds, unsupportedAuthority("transition", tr.Name, tr.Authority, tr.Line))
+		}
+		for _, op := range tr.Body {
+			switch op.Kind {
+			case ir.OpMove:
+				if op.From != "caller" {
+					ds = append(ds, diag.Diagnostic{
+						Severity: diag.Error,
+						Line:     op.Line,
+						Code:     "TRANSITION_NOT_CALLER_FUNDED",
+						Message:  fmt.Sprintf("transition %q moves value from %q instead of caller", tr.Name, op.From),
+						Why:      "v1 authority proves only that the caller owns the amount; moving from any other account is an unauthorized drain",
+						Fix:      "move from `caller`, or wait for a future authority form that explicitly binds another source account",
+					})
+				}
+				if ok && op.Amount != authAmount {
+					ds = append(ds, authorityAmountMismatch("transition", tr.Name, op.Amount, authAmount, op.Line))
+				}
+			case ir.OpCredit, ir.OpDebit:
+				ds = append(ds, diag.Diagnostic{
+					Severity: diag.Error,
+					Line:     op.Line,
+					Code:     "TRANSITION_SUPPLY_OP",
+					Message:  fmt.Sprintf("transition %q uses a supply-changing primitive", tr.Name),
+					Why:      "`credit` and `debit` can compose into hidden mint, burn, or drain behavior even when the net supply delta is zero",
+					Fix:      "use `move` in transitions; use declared `mint` or `burn` capabilities for supply changes",
+				})
+			}
+		}
+	}
+
+	for _, m := range c.Mints {
+		for _, op := range m.Body {
+			if op.Kind != ir.OpCredit {
+				ds = append(ds, diag.Diagnostic{
+					Severity: diag.Error,
+					Line:     op.Line,
+					Code:     "MINT_NON_CREDIT_OP",
+					Message:  fmt.Sprintf("mint %q contains a non-credit operation", m.Name),
+					Why:      "a mint capability may only create newly disclosed supply; moving or debiting holder funds inside mint authority is a hidden power",
+					Fix:      "keep mint bodies to `credit <recipient> : <amount>` operations",
+				})
+			}
+		}
+	}
+
+	for _, b := range c.Burns {
+		authAmount, ok := callerOwnsAmount(b.Authority)
+		if !ok {
+			ds = append(ds, unsupportedAuthority("burn", b.Name, b.Authority, b.Line))
+		}
+		for _, op := range b.Body {
+			if op.Kind != ir.OpDebit {
+				ds = append(ds, diag.Diagnostic{
+					Severity: diag.Error,
+					Line:     op.Line,
+					Code:     "BURN_NON_DEBIT_OP",
+					Message:  fmt.Sprintf("burn %q contains a non-debit operation", b.Name),
+					Why:      "a burn capability may only destroy the caller's own value; crediting or moving funds here hides another power",
+					Fix:      "keep burn bodies to `debit caller : <amount>` operations",
+				})
+				continue
+			}
+			if op.Account != "caller" {
+				ds = append(ds, diag.Diagnostic{
+					Severity: diag.Error,
+					Line:     op.Line,
+					Code:     "BURN_NOT_CALLER_FUNDED",
+					Message:  fmt.Sprintf("burn %q debits %q instead of caller", b.Name, op.Account),
+					Why:      "v1 burn authority proves only that the caller owns the amount; burning another account is a holder-drain power",
+					Fix:      "burn with `debit caller : amount`, or wait for a future explicit delegated-burn authority",
+				})
+			}
+			if ok && op.Amount != authAmount {
+				ds = append(ds, authorityAmountMismatch("burn", b.Name, op.Amount, authAmount, op.Line))
+			}
+		}
+	}
+
+	return ds
+}
+
+func callerOwnsAmount(authority string) (string, bool) {
+	parts := strings.Fields(authority)
+	if len(parts) == 3 && parts[0] == "caller" && parts[1] == "owns" && parts[2] != "" {
+		return parts[2], true
+	}
+	return "", false
+}
+
+func unsupportedAuthority(kind, name, authority string, line int) diag.Diagnostic {
+	return diag.Diagnostic{
+		Severity: diag.Error,
+		Line:     line,
+		Code:     "AUTH_UNSUPPORTED",
+		Message:  fmt.Sprintf("%s %q uses unsupported authority %q", kind, name, authority),
+		Why:      "v1 only has one sound authority form: `caller owns <amount>`; unknown forms would otherwise run as if unguarded",
+		Fix:      "use `by (caller owns amount)` and bind body operations to the same amount",
+	}
+}
+
+func authorityAmountMismatch(kind, name, opAmount, authAmount string, line int) diag.Diagnostic {
+	return diag.Diagnostic{
+		Severity: diag.Error,
+		Line:     line,
+		Code:     "AUTH_AMOUNT_MISMATCH",
+		Message:  fmt.Sprintf("%s %q spends %q but authority proves %q", kind, name, opAmount, authAmount),
+		Why:      "the authority check must prove the exact amount the operation spends",
+		Fix:      fmt.Sprintf("change the operation amount to `%s`, or change the authority to match `%s`", authAmount, opAmount),
+	}
 }

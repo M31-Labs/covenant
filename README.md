@@ -60,6 +60,16 @@ $ covenant run … issue  amount=500000  --approvals=founder            # only o
 A contract that tries to mint *quietly* (a `transition` that creates supply) doesn't compile:
 
 ```
+
+Nor can a transition hide a drain behind net-zero supply math. In v1,
+capability lanes are strict: `transition` bodies move value from `caller`,
+`mint` bodies only `credit`, and `burn` bodies only `debit caller`. A
+`debit victim; credit caller` transition is still a compile error even though
+total supply nets to zero.
+
+A mint that omits its hard cap also parses into the checker and fails with a
+teaching diagnostic (`MINT_UNCAPPED`) instead of degrading into a generic syntax
+error.
 ❌ this transition creates or destroys value  (line 8, col 9)
    why:  a transition that changes total supply is a hidden mint/burn — the most common way tokens get rugged
    fix:  use `move` to transfer existing value, or put supply changes in a declared `mint`/`burn` capability
@@ -76,7 +86,7 @@ A contract is an explicit, governed, audited **state machine over money-typed st
                               └─interp→ atomic execution → deterministic receipt
 ```
 
-- **Conservation is proven, not summed.** A keyed `ledger` exposes only structured ops (`move`/`credit`/`debit`); the compiler proves each transition's net supply delta, so value can't be created or destroyed except through a declared, **capped + quorum-gated** `mint`/`burn`. No runtime sum-over-holders.
+- **Conservation is proven by capability deltas, not author-written holder loops.** A keyed `ledger` exposes only structured ops (`move`/`credit`/`debit`); the compiler proves each action stays in its declared lane, so value can't be created, destroyed, or reassigned through hidden `credit`/`debit` tricks except through a declared, **capped + quorum-gated** capability. The v1 interpreter also does a defensive in-memory invariant recheck before commit.
 - **Atomic & deterministic runtime.** Every transition runs on a state snapshot: authority → quorum → cap → apply → re-verify conservation → commit-or-revert. No wall-clock, no I/O; the same inputs always yield the same byte-identical receipt.
 - **The badge never lies.** An unsafe contract renders `⚠ UNSAFE`, not a clean check.
 

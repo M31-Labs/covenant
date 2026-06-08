@@ -76,3 +76,13 @@ func TestCheckOnSyntaxError(t *testing.T) {
 		t.Fatalf("expected syntax/parse teaching text in output, got:\n%s", out)
 	}
 }
+
+func TestCheckOnUncappedMintTeaches(t *testing.T) {
+	out, code := runCheck("../../examples/_bad_uncapped_mint.cov")
+	if code != 1 {
+		t.Fatalf("expected exit 1 for uncapped mint, got %d\noutput:\n%s", code, out)
+	}
+	if !strings.Contains(out, "MINT_UNCAPPED") && !strings.Contains(strings.ToLower(out), "hard cap") {
+		t.Fatalf("expected uncapped-mint teaching text, got:\n%s", out)
+	}
+}
