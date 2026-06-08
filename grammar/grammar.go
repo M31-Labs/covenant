@@ -13,7 +13,6 @@ var (
 	seq      = grammargen.Seq
 	choice   = grammargen.Choice
 	repeat   = grammargen.Repeat
-	optional = grammargen.Optional
 	field    = grammargen.Field
 	str      = grammargen.Str
 	pat      = grammargen.Pat
