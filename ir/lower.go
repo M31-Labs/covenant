@@ -8,12 +8,49 @@ import (
 	"m31labs.dev/covenant/diag"
 )
 
+// firstErrorNode does a pre-order walk to find the first node where
+// IsError() or IsMissing() is true. Returns nil if none found.
+func firstErrorNode(n *gotreesitter.Node) *gotreesitter.Node {
+	if n == nil {
+		return nil
+	}
+	if n.IsError() || n.IsMissing() {
+		return n
+	}
+	for i := 0; i < n.ChildCount(); i++ {
+		if found := firstErrorNode(n.Child(i)); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
 // Lower walks a Covenant CST and produces a *Contract.
 // Any malformed declaration emits a diag.Diagnostic rather than panicking.
 func Lower(tree *gotreesitter.Tree, src []byte) (*Contract, []diag.Diagnostic) {
 	lang := tree.Language()
 	root := tree.RootNode()
 	var ds []diag.Diagnostic
+
+	// Up-front syntax error check: if the parse tree contains any ERROR or
+	// MISSING nodes, emit a single teachable diagnostic and return early.
+	if root.HasError() {
+		errNode := firstErrorNode(root)
+		line, col := 1, 0
+		if errNode != nil {
+			line, col = sourceLineCol(errNode)
+		}
+		ds = append(ds, diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     line,
+			Col:      col,
+			Code:     "PARSE_SYNTAX_ERROR",
+			Message:  "syntax error — Covenant couldn't parse this file",
+			Why:      "there's invalid or incomplete syntax, so the contract can't be read",
+			Fix:      "check the reported line for a typo, a missing token, or an unclosed { } ( )",
+		})
+		return nil, ds
+	}
 
 	// source_file: Repeat(contract)
 	// Find the first contract node.
@@ -68,36 +105,40 @@ func Lower(tree *gotreesitter.Tree, src []byte) (*Contract, []diag.Diagnostic) {
 }
 
 func lowerLedger(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Ledger {
+	line, _ := sourceLineCol(n)
 	return Ledger{
 		Name: nodeText(n.ChildByFieldName("name", lang), src),
 		Unit: nodeText(n.ChildByFieldName("type", lang), src),
-		Line: sourceLine(n),
+		Line: line,
 	}
 }
 
 func lowerSupply(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Supply {
+	line, _ := sourceLineCol(n)
 	return Supply{
 		Name: nodeText(n.ChildByFieldName("name", lang), src),
 		Unit: nodeText(n.ChildByFieldName("type", lang), src),
-		Line: sourceLine(n),
+		Line: line,
 	}
 }
 
 func lowerInvariant(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Invariant {
+	line, _ := sourceLineCol(n)
 	return Invariant{
 		Kind:   "conserves",
 		Ledger: nodeText(n.ChildByFieldName("ledger", lang), src),
 		Supply: nodeText(n.ChildByFieldName("supply", lang), src),
-		Line:   sourceLine(n),
+		Line:   line,
 	}
 }
 
 func lowerMint(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (Mint, []diag.Diagnostic) {
 	var ds []diag.Diagnostic
+	line, _ := sourceLineCol(n)
 	m := Mint{
 		Name: nodeText(n.ChildByFieldName("name", lang), src),
 		Unit: nodeText(n.ChildByFieldName("type", lang), src),
-		Line: sourceLine(n),
+		Line: line,
 		Cap:  -1,
 	}
 
@@ -107,13 +148,15 @@ func lowerMint(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (M
 		capStr := strings.ReplaceAll(nodeText(capNode, src), "_", "")
 		v, err := strconv.ParseInt(capStr, 10, 64)
 		if err != nil {
+			capLine, capCol := sourceLineCol(capNode)
 			ds = append(ds, diag.Diagnostic{
 				Severity: diag.Error,
-				Line:     sourceLine(capNode),
+				Line:     capLine,
+				Col:      capCol,
 				Code:     "LOWER_MALFORMED_MINT",
-				Message:  "mint cap is not a valid integer: " + nodeText(capNode, src),
-				Why:      "the cap must be a decimal integer (underscores allowed for readability)",
-				Fix:      "use a valid integer literal, e.g. `cap 1_000_000`",
+				Message:  "mint cap is too large",
+				Why:      "caps must fit in a 64-bit integer (max ~9.2e18 base units)",
+				Fix:      "use a smaller cap, e.g. `cap 1_000_000`",
 			})
 		} else {
 			m.Cap = v
@@ -125,9 +168,11 @@ func lowerMint(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (M
 	if threshNode != nil {
 		v, err := strconv.Atoi(nodeText(threshNode, src))
 		if err != nil {
+			threshLine, threshCol := sourceLineCol(threshNode)
 			ds = append(ds, diag.Diagnostic{
 				Severity: diag.Error,
-				Line:     sourceLine(threshNode),
+				Line:     threshLine,
+				Col:      threshCol,
 				Code:     "LOWER_MALFORMED_MINT",
 				Message:  "mint threshold is not a valid integer: " + nodeText(threshNode, src),
 				Why:      "approval threshold must be a whole number",
@@ -158,9 +203,10 @@ func lowerMint(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (M
 }
 
 func lowerTransition(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Transition {
+	line, _ := sourceLineCol(n)
 	tr := Transition{
 		Name: nodeText(n.ChildByFieldName("name", lang), src),
-		Line: sourceLine(n),
+		Line: line,
 	}
 
 	// Collect repeated param fields.
@@ -189,9 +235,10 @@ func lowerTransition(n *gotreesitter.Node, src []byte, lang *gotreesitter.Langua
 }
 
 func lowerBurn(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Burn {
+	line, _ := sourceLineCol(n)
 	b := Burn{
 		Name: nodeText(n.ChildByFieldName("name", lang), src),
-		Line: sourceLine(n),
+		Line: line,
 	}
 	authNode := n.ChildByFieldName("auth", lang)
 	if authNode != nil {
@@ -224,6 +271,7 @@ func lowerBlock(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) [
 	var ops []Op
 	for i := 0; i < n.NamedChildCount(); i++ {
 		child := n.NamedChild(i)
+		line, _ := sourceLineCol(child)
 		switch child.Type(lang) {
 		case "move_op":
 			ops = append(ops, Op{
@@ -232,21 +280,21 @@ func lowerBlock(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) [
 				From:   nodeText(child.ChildByFieldName("from", lang), src),
 				To:     nodeText(child.ChildByFieldName("to", lang), src),
 				Amount: nodeText(child.ChildByFieldName("amount", lang), src),
-				Line:   sourceLine(child),
+				Line:   line,
 			})
 		case "credit_op":
 			ops = append(ops, Op{
 				Kind:    OpCredit,
 				Account: nodeText(child.ChildByFieldName("account", lang), src),
 				Amount:  nodeText(child.ChildByFieldName("amount", lang), src),
-				Line:    sourceLine(child),
+				Line:    line,
 			})
 		case "debit_op":
 			ops = append(ops, Op{
 				Kind:    OpDebit,
 				Account: nodeText(child.ChildByFieldName("account", lang), src),
 				Amount:  nodeText(child.ChildByFieldName("amount", lang), src),
-				Line:    sourceLine(child),
+				Line:    line,
 			})
 		}
 	}
@@ -267,4 +315,15 @@ func sourceLine(n *gotreesitter.Node) int {
 		return 0
 	}
 	return int(n.StartPoint().Row) + 1
+}
+
+// sourceLineCol returns the 1-based line and 0-based column from a node's
+// start position. Both values come from the same StartPoint() call so they
+// are always consistent.
+func sourceLineCol(n *gotreesitter.Node) (line, col int) {
+	if n == nil {
+		return 0, 0
+	}
+	pt := n.StartPoint()
+	return int(pt.Row) + 1, int(pt.Column)
 }

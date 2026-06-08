@@ -7,6 +7,42 @@ import (
 	"m31labs.dev/covenant/grammar"
 )
 
+func TestLowerSyntaxError(t *testing.T) {
+	src := []byte(`contract Bad {`)
+	tree, _ := grammar.Parse(src)
+	_, diags := Lower(tree, src)
+	if len(diags) < 1 {
+		t.Fatalf("expected at least one diagnostic, got none")
+	}
+	if diags[0].Code != "PARSE_SYNTAX_ERROR" {
+		t.Fatalf("expected PARSE_SYNTAX_ERROR, got %q", diags[0].Code)
+	}
+}
+
+func TestLowerCapOverflow(t *testing.T) {
+	src := []byte(`contract Overflow {
+    ledger balances: TOKEN
+    supply total:    TOKEN
+    invariant conserves(balances, total)
+
+    mint issue cap 99999999999999999999999999 TOKEN by approval 1 of { admin } {
+        credit recipient : amount
+    }
+}`)
+	tree, _ := grammar.Parse(src)
+	_, diags := Lower(tree, src)
+	found := false
+	for _, d := range diags {
+		if d.Code == "LOWER_MALFORMED_MINT" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected LOWER_MALFORMED_MINT diagnostic for overflow cap, got %v", diags)
+	}
+}
+
 func TestLowerFlagship(t *testing.T) {
 	src, _ := os.ReadFile("../examples/community_token.cov")
 	tree, _ := grammar.Parse(src)
