@@ -1,5 +1,7 @@
 package state
 
+import "maps"
+
 // State holds the runtime ledger state for a single contract.
 type State struct {
 	Balances map[string]int64 // holder -> amount (base units)
@@ -18,8 +20,6 @@ func (s *State) Clone() *State {
 		Supply:   s.Supply,
 		Balances: make(map[string]int64, len(s.Balances)),
 	}
-	for k, v := range s.Balances {
-		cp.Balances[k] = v
-	}
+	maps.Copy(cp.Balances, s.Balances)
 	return cp
 }

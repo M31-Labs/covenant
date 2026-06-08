@@ -32,7 +32,13 @@ func (d Diagnostic) Teach() string {
 	if d.Severity == Warning {
 		icon = "⚠️"
 	}
-	s := fmt.Sprintf("%s %s  (line %d)\n", icon, d.Message, d.Line)
+	var loc string
+	if d.Col > 0 {
+		loc = fmt.Sprintf("(line %d, col %d)", d.Line, d.Col)
+	} else {
+		loc = fmt.Sprintf("(line %d)", d.Line)
+	}
+	s := fmt.Sprintf("%s %s  %s\n", icon, d.Message, loc)
 	if d.Why != "" {
 		s += fmt.Sprintf("   why:  %s\n", d.Why)
 	}

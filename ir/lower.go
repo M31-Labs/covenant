@@ -309,14 +309,6 @@ func nodeText(n *gotreesitter.Node, src []byte) string {
 	return n.Text(src)
 }
 
-// sourceLine returns 1-based line number from a node's start position.
-func sourceLine(n *gotreesitter.Node) int {
-	if n == nil {
-		return 0
-	}
-	return int(n.StartPoint().Row) + 1
-}
-
 // sourceLineCol returns the 1-based line and 0-based column from a node's
 // start position. Both values come from the same StartPoint() call so they
 // are always consistent.

@@ -10,16 +10,16 @@ import (
 
 // Aliases for the grammargen DSL so the grammar definition reads cleanly.
 var (
-	Seq      = grammargen.Seq
-	Choice   = grammargen.Choice
-	Repeat   = grammargen.Repeat
-	Optional = grammargen.Optional
-	Field    = grammargen.Field
-	Str      = grammargen.Str
-	Pat      = grammargen.Pat
-	Sym      = grammargen.Sym
-	Token    = grammargen.Token
-	CommaSep = grammargen.CommaSep
+	seq      = grammargen.Seq
+	choice   = grammargen.Choice
+	repeat   = grammargen.Repeat
+	optional = grammargen.Optional
+	field    = grammargen.Field
+	str      = grammargen.Str
+	pat      = grammargen.Pat
+	sym      = grammargen.Sym
+	token    = grammargen.Token
+	commaSep = grammargen.CommaSep
 )
 
 // CovenantGrammar builds the minimal Covenant ("cov") grammar.
@@ -32,160 +32,160 @@ func CovenantGrammar() *grammargen.Grammar {
 	g := grammargen.NewGrammar("cov")
 
 	// source_file: one or more contracts.
-	g.Define("source_file", Repeat(Sym("contract")))
+	g.Define("source_file", repeat(sym("contract")))
 
 	// contract CommunityToken { ...decls... }
-	g.Define("contract", Seq(
-		Str("contract"),
-		Field("name", Sym("identifier")),
-		Str("{"),
-		Repeat(Sym("_decl")),
-		Str("}"),
+	g.Define("contract", seq(
+		str("contract"),
+		field("name", sym("identifier")),
+		str("{"),
+		repeat(sym("_decl")),
+		str("}"),
 	))
 
 	// Hidden choice of the declaration forms allowed inside a contract body.
-	g.Define("_decl", Choice(
-		Sym("ledger_decl"),
-		Sym("supply_decl"),
-		Sym("invariant_decl"),
-		Sym("mint_decl"),
-		Sym("transition_decl"),
-		Sym("burn_decl"),
+	g.Define("_decl", choice(
+		sym("ledger_decl"),
+		sym("supply_decl"),
+		sym("invariant_decl"),
+		sym("mint_decl"),
+		sym("transition_decl"),
+		sym("burn_decl"),
 	))
 
 	// ledger balances: TOKEN
-	g.Define("ledger_decl", Seq(
-		Str("ledger"),
-		Field("name", Sym("identifier")),
-		Str(":"),
-		Field("type", Sym("type")),
+	g.Define("ledger_decl", seq(
+		str("ledger"),
+		field("name", sym("identifier")),
+		str(":"),
+		field("type", sym("type")),
 	))
 
 	// supply total: TOKEN
-	g.Define("supply_decl", Seq(
-		Str("supply"),
-		Field("name", Sym("identifier")),
-		Str(":"),
-		Field("type", Sym("type")),
+	g.Define("supply_decl", seq(
+		str("supply"),
+		field("name", sym("identifier")),
+		str(":"),
+		field("type", sym("type")),
 	))
 
 	// invariant conserves(balances, total)
-	g.Define("invariant_decl", Seq(
-		Str("invariant"),
-		Str("conserves"),
-		Str("("),
-		Field("ledger", Sym("identifier")),
-		Str(","),
-		Field("supply", Sym("identifier")),
-		Str(")"),
+	g.Define("invariant_decl", seq(
+		str("invariant"),
+		str("conserves"),
+		str("("),
+		field("ledger", sym("identifier")),
+		str(","),
+		field("supply", sym("identifier")),
+		str(")"),
 	))
 
 	// mint issue cap 1_000_000 TOKEN by approval 2 of { founder, treasurer, community } { ...ops... }
-	g.Define("mint_decl", Seq(
-		Str("mint"),
-		Field("name", Sym("identifier")),
-		Str("cap"),
-		Field("cap", Sym("int")),
-		Field("type", Sym("type")),
-		Str("by"),
-		Str("approval"),
-		Field("threshold", Sym("int")),
-		Str("of"),
-		Str("{"),
-		CommaSep(Field("approver", Sym("identifier"))),
-		Str("}"),
-		Field("body", Sym("block")),
+	g.Define("mint_decl", seq(
+		str("mint"),
+		field("name", sym("identifier")),
+		str("cap"),
+		field("cap", sym("int")),
+		field("type", sym("type")),
+		str("by"),
+		str("approval"),
+		field("threshold", sym("int")),
+		str("of"),
+		str("{"),
+		commaSep(field("approver", sym("identifier"))),
+		str("}"),
+		field("body", sym("block")),
 	))
 
 	// transition transfer(to: Account, amount: TOKEN) by (caller owns amount) { ...ops... }
-	g.Define("transition_decl", Seq(
-		Str("transition"),
-		Field("name", Sym("identifier")),
-		Str("("),
-		CommaSep(Field("param", Sym("param"))),
-		Str(")"),
-		Str("by"),
-		Str("("),
-		Field("auth", Sym("auth_expr")),
-		Str(")"),
-		Field("body", Sym("block")),
+	g.Define("transition_decl", seq(
+		str("transition"),
+		field("name", sym("identifier")),
+		str("("),
+		commaSep(field("param", sym("param"))),
+		str(")"),
+		str("by"),
+		str("("),
+		field("auth", sym("auth_expr")),
+		str(")"),
+		field("body", sym("block")),
 	))
 
 	// param: to: Account
-	g.Define("param", Seq(
-		Field("name", Sym("identifier")),
-		Str(":"),
-		Field("type", Sym("type")),
+	g.Define("param", seq(
+		field("name", sym("identifier")),
+		str(":"),
+		field("type", sym("type")),
 	))
 
 	// burn retire by (caller owns amount) { ...ops... }
-	g.Define("burn_decl", Seq(
-		Str("burn"),
-		Field("name", Sym("identifier")),
-		Str("by"),
-		Str("("),
-		Field("auth", Sym("auth_expr")),
-		Str(")"),
-		Field("body", Sym("block")),
+	g.Define("burn_decl", seq(
+		str("burn"),
+		field("name", sym("identifier")),
+		str("by"),
+		str("("),
+		field("auth", sym("auth_expr")),
+		str(")"),
+		field("body", sym("block")),
 	))
 
 	// auth_expr: caller owns amount  (kept tiny; only what the flagship needs).
-	g.Define("auth_expr", Seq(
-		Field("left", Sym("identifier")),
-		Field("operator", Choice(Str("owns"), Str("=="))),
-		Field("right", Sym("identifier")),
+	g.Define("auth_expr", seq(
+		field("left", sym("identifier")),
+		field("operator", choice(str("owns"), str("=="))),
+		field("right", sym("identifier")),
 	))
 
 	// block: { ...ops... }
-	g.Define("block", Seq(
-		Str("{"),
-		Repeat(Sym("op")),
-		Str("}"),
+	g.Define("block", seq(
+		str("{"),
+		repeat(sym("op")),
+		str("}"),
 	))
 
 	// op: one statement inside a block.
-	g.Define("op", Choice(
-		Sym("move_op"),
-		Sym("credit_op"),
-		Sym("debit_op"),
+	g.Define("op", choice(
+		sym("move_op"),
+		sym("credit_op"),
+		sym("debit_op"),
 	))
 
 	// move balances: caller -> to : amount   (ledger : from -> to : amount)
-	g.Define("move_op", Seq(
-		Str("move"),
-		Field("ledger", Sym("identifier")),
-		Str(":"),
-		Field("from", Sym("identifier")),
-		Str("->"),
-		Field("to", Sym("identifier")),
-		Str(":"),
-		Field("amount", Sym("identifier")),
+	g.Define("move_op", seq(
+		str("move"),
+		field("ledger", sym("identifier")),
+		str(":"),
+		field("from", sym("identifier")),
+		str("->"),
+		field("to", sym("identifier")),
+		str(":"),
+		field("amount", sym("identifier")),
 	))
 
 	// credit recipient : amount   (account : amount)
-	g.Define("credit_op", Seq(
-		Str("credit"),
-		Field("account", Sym("identifier")),
-		Str(":"),
-		Field("amount", Sym("identifier")),
+	g.Define("credit_op", seq(
+		str("credit"),
+		field("account", sym("identifier")),
+		str(":"),
+		field("amount", sym("identifier")),
 	))
 
 	// debit caller : amount
-	g.Define("debit_op", Seq(
-		Str("debit"),
-		Field("account", Sym("identifier")),
-		Str(":"),
-		Field("amount", Sym("identifier")),
+	g.Define("debit_op", seq(
+		str("debit"),
+		field("account", sym("identifier")),
+		str(":"),
+		field("amount", sym("identifier")),
 	))
 
 	// type: an identifier (e.g. TOKEN, Account).
-	g.Define("type", Sym("identifier"))
+	g.Define("type", sym("identifier"))
 
 	// identifier: [A-Za-z_][A-Za-z0-9_]*
-	g.Define("identifier", Token(Pat(`[A-Za-z_][A-Za-z0-9_]*`)))
+	g.Define("identifier", token(pat(`[A-Za-z_][A-Za-z0-9_]*`)))
 
 	// int: [0-9][0-9_]*  (underscores allowed, e.g. 1_000_000)
-	g.Define("int", Token(Pat(`[0-9][0-9_]*`)))
+	g.Define("int", token(pat(`[0-9][0-9_]*`)))
 
 	// Word token drives keyword extraction: every literal keyword (contract,
 	// ledger, mint, owns, ...) is carved out of the identifier token so keywords
@@ -199,7 +199,7 @@ func CovenantGrammar() *grammargen.Grammar {
 	g.SetInline("_decl", "op")
 
 	// Whitespace is an EXTRA so it may appear between any tokens.
-	g.SetExtras(Pat(`[ \t\r\n]+`))
+	g.SetExtras(pat(`[ \t\r\n]+`))
 
 	// Embedded smoke test: parses with zero ERROR nodes.
 	g.Test("flagship", flagshipSample, "")
