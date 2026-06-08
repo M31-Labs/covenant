@@ -258,6 +258,65 @@ func TestBurnPath(t *testing.T) {
 	}
 }
 
+// TestNegativeBurnRejected: retire with a negative amount must be rejected and
+// leave state UNCHANGED. Before the fix this minted 1M tokens — CRITICAL bug.
+func TestNegativeBurnRejected(t *testing.T) {
+	c := loadContract(t)
+	st := state.New()
+
+	r := interp.Invoke(c, st, "retire",
+		map[string]any{"amount": int64(-1_000_000)},
+		interp.Context{Caller: "alice", Now: 1},
+	)
+	if r.OK {
+		t.Fatal("expected rejection for negative amount, got OK (critical: this minted tokens from nothing)")
+	}
+	if r.Reason != "NEGATIVE_AMOUNT" {
+		t.Errorf("Reason=%q, want NEGATIVE_AMOUNT", r.Reason)
+	}
+	if st.Supply != 0 {
+		t.Errorf("Supply=%d after rejection, want 0 (state must be unchanged)", st.Supply)
+	}
+	if st.Balances["alice"] != 0 {
+		t.Errorf("alice=%d after rejection, want 0 (state must be unchanged)", st.Balances["alice"])
+	}
+}
+
+// TestNegativeTransferRejected: transfer with a negative amount must be rejected.
+// Before the fix a negative transfer would drain the recipient and credit the caller.
+func TestNegativeTransferRejected(t *testing.T) {
+	c := loadContract(t)
+	st := state.New()
+
+	// Setup: mint 500_000 to alice.
+	r1 := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "alice", "amount": int64(500_000)},
+		interp.Context{Caller: "founder", Now: 1, Approvals: []string{"founder", "treasurer"}},
+	)
+	if !r1.OK {
+		t.Fatalf("setup mint failed: %q", r1.Reason)
+	}
+
+	// Negative transfer from alice to bob — must be rejected.
+	r2 := interp.Invoke(c, st, "transfer",
+		map[string]any{"to": "bob", "amount": int64(-100_000)},
+		interp.Context{Caller: "alice", Now: 2},
+	)
+	if r2.OK {
+		t.Fatal("expected rejection for negative transfer amount, got OK")
+	}
+	if r2.Reason != "NEGATIVE_AMOUNT" {
+		t.Errorf("Reason=%q, want NEGATIVE_AMOUNT", r2.Reason)
+	}
+	// Balances must be unchanged.
+	if st.Balances["alice"] != 500_000 {
+		t.Errorf("alice=%d after rejection, want 500_000 (unchanged)", st.Balances["alice"])
+	}
+	if st.Balances["bob"] != 0 {
+		t.Errorf("bob=%d after rejection, want 0 (unchanged)", st.Balances["bob"])
+	}
+}
+
 // TestReceiptDeterministic: same inputs → identical Hash.
 func TestReceiptDeterministic(t *testing.T) {
 	c := loadContract(t)

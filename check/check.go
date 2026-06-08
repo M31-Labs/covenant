@@ -47,6 +47,12 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 		if d := checkMintQuorum(m); d != nil {
 			ds = append(ds, *d)
 		}
+		if d := checkMintImpossibleQuorum(m); d != nil {
+			ds = append(ds, *d)
+		}
+		if d := checkMintDuplicateSigners(m); d != nil {
+			ds = append(ds, *d)
+		}
 	}
 
 	// --- 3. Conservation-coverage check ---
@@ -126,6 +132,45 @@ func checkMintQuorum(m ir.Mint) *diag.Diagnostic {
 			Why:      "a single key could mint unilaterally; holders can't veto",
 			Fix:      "require approval, e.g. `by approval 2 of { ... }`",
 		}
+	}
+	return nil
+}
+
+// checkMintImpossibleQuorum returns MINT_IMPOSSIBLE_QUORUM (Warning) when the
+// quorum exceeds the number of declared signers — the mint can never fire.
+// This is safe but deceptive: the badge's N-of-M reads as if N approvals are
+// possible, when in fact the mint is permanently locked.
+func checkMintImpossibleQuorum(m ir.Mint) *diag.Diagnostic {
+	if m.Quorum > len(m.Signers) {
+		return &diag.Diagnostic{
+			Severity: diag.Warning,
+			Line:     m.Line,
+			Code:     "MINT_IMPOSSIBLE_QUORUM",
+			Message:  fmt.Sprintf("mint %q requires %d approvals but only has %d signers — it can never fire", m.Name, m.Quorum, len(m.Signers)),
+			Why:      "this mint requires more approvals than it has signers — it can never fire (safe, but the badge's N-of-M reads as deceptive)",
+			Fix:      "set quorum ≤ number of signers",
+		}
+	}
+	return nil
+}
+
+// checkMintDuplicateSigners returns MINT_DUPLICATE_SIGNERS (Warning) when the
+// Signers list contains repeated entries. The runtime counts distinct signers,
+// so the effective quorum is lower than the badge implies.
+func checkMintDuplicateSigners(m ir.Mint) *diag.Diagnostic {
+	seen := make(map[string]bool, len(m.Signers))
+	for _, s := range m.Signers {
+		if seen[s] {
+			return &diag.Diagnostic{
+				Severity: diag.Warning,
+				Line:     m.Line,
+				Code:     "MINT_DUPLICATE_SIGNERS",
+				Message:  fmt.Sprintf("mint %q lists signer %q more than once", m.Name, s),
+				Why:      "a signer is listed more than once; the runtime counts distinct signers, so the effective quorum is lower than the badge implies",
+				Fix:      "list each signer once",
+			}
+		}
+		seen[s] = true
 	}
 	return nil
 }

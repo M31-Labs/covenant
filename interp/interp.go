@@ -57,6 +57,16 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 		return reject(base, "UNKNOWN_ACTION")
 	}
 
+	// 1b. Reject any negative int64 argument — before any authority or cap check.
+	// A negative amount passed to a burn does `balance -= (-N)` = balance += N,
+	// which mints tokens from nothing (CRITICAL). A negative transfer drains
+	// the recipient. Reject all negative amounts unconditionally.
+	for _, v := range args {
+		if n, ok := v.(int64); ok && n < 0 {
+			return reject(base, "NEGATIVE_AMOUNT")
+		}
+	}
+
 	// 2. Authority / guard checks (BEFORE snapshot mutation).
 	if foundMint != nil {
 		// Quorum: count approvals that are in the signers set.
@@ -87,7 +97,9 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 				minted += a
 			}
 		}
-		if foundMint.Cap >= 0 && st.Supply+minted > foundMint.Cap {
+		// Overflow-safe cap check: since amounts and supply are now ≥ 0 and
+		// supply ≤ cap, use subtraction to avoid int64 overflow.
+		if foundMint.Cap >= 0 && minted > foundMint.Cap-st.Supply {
 			return reject(base, "MINT_CAP_EXCEEDED")
 		}
 	}

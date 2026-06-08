@@ -204,6 +204,79 @@ func TestBadgeNeverLies(t *testing.T) {
 	}
 }
 
+// TestImpossibleQuorumWarned: a mint whose quorum exceeds its signer count can
+// never fire. Check must emit a MINT_IMPOSSIBLE_QUORUM Warning (NOT Error).
+func TestImpossibleQuorumWarned(t *testing.T) {
+	c := &ir.Contract{
+		Name: "BadToken",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Mints: []ir.Mint{
+			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 5, Signers: []string{"a", "b"}, Line: 4},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "MINT_IMPOSSIBLE_QUORUM" {
+			if d.Severity != diag.Warning {
+				t.Errorf("MINT_IMPOSSIBLE_QUORUM must be a Warning, got Severity=%d", d.Severity)
+			}
+			found = true
+		}
+		// Must not be an Error-level diagnostic for this code.
+		if d.Code == "MINT_IMPOSSIBLE_QUORUM" && d.Severity == diag.Error {
+			t.Error("MINT_IMPOSSIBLE_QUORUM must NOT be an Error")
+		}
+	}
+	if !found {
+		t.Errorf("want MINT_IMPOSSIBLE_QUORUM warning diagnostic, got: %v", diagnostics)
+	}
+}
+
+// TestDuplicateSignersWarned: a mint whose Signers list contains duplicates
+// must emit a MINT_DUPLICATE_SIGNERS Warning (NOT Error).
+func TestDuplicateSignersWarned(t *testing.T) {
+	c := &ir.Contract{
+		Name: "BadToken",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Mints: []ir.Mint{
+			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"admin", "admin"}, Line: 4},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "MINT_DUPLICATE_SIGNERS" {
+			if d.Severity != diag.Warning {
+				t.Errorf("MINT_DUPLICATE_SIGNERS must be a Warning, got Severity=%d", d.Severity)
+			}
+			found = true
+		}
+		if d.Code == "MINT_DUPLICATE_SIGNERS" && d.Severity == diag.Error {
+			t.Error("MINT_DUPLICATE_SIGNERS must NOT be an Error")
+		}
+	}
+	if !found {
+		t.Errorf("want MINT_DUPLICATE_SIGNERS warning diagnostic, got: %v", diagnostics)
+	}
+}
+
 // TestUnconservedValue checks that a Supply not referenced by any conserves
 // invariant produces UNCONSERVED_VALUE.
 func TestUnconservedValue(t *testing.T) {
