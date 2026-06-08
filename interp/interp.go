@@ -65,8 +65,10 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 			signerSet[s] = true
 		}
 		approved := 0
+		seen := make(map[string]bool)
 		for _, a := range ctx.Approvals {
-			if signerSet[a] {
+			if signerSet[a] && !seen[a] {
+				seen[a] = true
 				approved++
 			}
 		}

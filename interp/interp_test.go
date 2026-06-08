@@ -171,6 +171,93 @@ func TestTransferInsufficientBalance(t *testing.T) {
 	}
 }
 
+// TestQuorumDedupBypassRejected: a single signer repeated twice must NOT satisfy
+// a quorum of 2. The dedup bug allows "founder","founder" to count as 2 — this
+// test must FAIL on the buggy code and PASS after the fix.
+func TestQuorumDedupBypassRejected(t *testing.T) {
+	c := loadContract(t)
+	st := state.New()
+
+	r := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "alice", "amount": int64(100_000)},
+		interp.Context{
+			Caller:    "founder",
+			Now:       1,
+			Approvals: []string{"founder", "founder"}, // same signer twice
+		},
+	)
+	if r.OK {
+		t.Fatal("expected MINT_QUORUM_UNMET: duplicate signer must not count twice")
+	}
+	if r.Reason != "MINT_QUORUM_UNMET" {
+		t.Errorf("Reason=%q, want MINT_QUORUM_UNMET", r.Reason)
+	}
+	if st.Supply != 0 {
+		t.Errorf("Supply=%d after rejection, want 0 (state unchanged)", st.Supply)
+	}
+}
+
+// TestQuorumDistinctSignersAccepted: two DISTINCT valid signers must satisfy
+// a quorum of 2. Guards against an over-aggressive fix breaking the happy path.
+func TestQuorumDistinctSignersAccepted(t *testing.T) {
+	c := loadContract(t)
+	st := state.New()
+
+	r := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "alice", "amount": int64(250_000)},
+		interp.Context{
+			Caller:    "founder",
+			Now:       1,
+			Approvals: []string{"founder", "treasurer"}, // two distinct signers
+		},
+	)
+	if !r.OK {
+		t.Fatalf("expected OK for two distinct signers, got Reason=%q", r.Reason)
+	}
+	if st.Supply != 250_000 {
+		t.Errorf("Supply=%d, want 250_000", st.Supply)
+	}
+}
+
+// TestBurnPath: mint 500_000 to alice then burn 200_000 via retire.
+// Supply and balance must both decrease; conservation must hold.
+func TestBurnPath(t *testing.T) {
+	c := loadContract(t)
+	st := state.New()
+
+	// Setup: mint 500_000 to alice.
+	r1 := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "alice", "amount": int64(500_000)},
+		interp.Context{Caller: "founder", Now: 1, Approvals: []string{"founder", "treasurer"}},
+	)
+	if !r1.OK {
+		t.Fatalf("setup mint failed: %q", r1.Reason)
+	}
+
+	// Burn 200_000 from alice.
+	r2 := interp.Invoke(c, st, "retire",
+		map[string]any{"amount": int64(200_000)},
+		interp.Context{Caller: "alice", Now: 3},
+	)
+	if !r2.OK {
+		t.Fatalf("retire failed: %q", r2.Reason)
+	}
+	if st.Balances["alice"] != 300_000 {
+		t.Errorf("alice=%d after burn, want 300_000", st.Balances["alice"])
+	}
+	if st.Supply != 300_000 {
+		t.Errorf("Supply=%d after burn, want 300_000", st.Supply)
+	}
+	// Conservation: sum(balances) == supply.
+	var sumBal int64
+	for _, v := range st.Balances {
+		sumBal += v
+	}
+	if sumBal != st.Supply {
+		t.Errorf("conservation violated: sum(balances)=%d != Supply=%d", sumBal, st.Supply)
+	}
+}
+
 // TestReceiptDeterministic: same inputs → identical Hash.
 func TestReceiptDeterministic(t *testing.T) {
 	c := loadContract(t)
