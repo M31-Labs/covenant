@@ -139,6 +139,71 @@ func TestNoQuorumRejected(t *testing.T) {
 	}
 }
 
+// TestBadgeNeverLies asserts two things:
+//  1. A safe (flagship) badge still contains the reassuring footer, the
+//     thousands-formatted cap, and the N-of-M quorum notation.
+//  2. An UNSAFE badge (Quorum==0 and/or Cap==-1) does NOT contain the
+//     reassuring footer, does NOT contain "requires 0-of" or "capped -1",
+//     and DOES contain a warning marker (UNSAFE or ⚠).
+func TestBadgeNeverLies(t *testing.T) {
+	// --- positive case: safe flagship contract ---
+	safeContract := &ir.Contract{
+		Name: "SafeToken",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Mints: []ir.Mint{
+			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"alice", "bob", "carol"}, Line: 4},
+		},
+	}
+	_, safeReport := Check(safeContract)
+	safeBadge := safeReport.Badge()
+
+	if !strings.Contains(safeBadge, "a holder can verify") {
+		t.Errorf("safe badge must contain 'a holder can verify'; badge:\n%s", safeBadge)
+	}
+	if !strings.Contains(safeBadge, "2-of-3") {
+		t.Errorf("safe badge must contain '2-of-3'; badge:\n%s", safeBadge)
+	}
+	if !strings.Contains(safeBadge, "1,000,000") {
+		t.Errorf("safe badge must contain '1,000,000'; badge:\n%s", safeBadge)
+	}
+
+	// --- negative case: unsafe contract (Quorum==0, Cap==-1) ---
+	unsafeContract := &ir.Contract{
+		Name: "UnsafeToken",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Mints: []ir.Mint{
+			{Name: "issue", Cap: -1, Unit: "TOK", Quorum: 0, Signers: []string{"alice", "bob", "carol"}, Line: 4},
+		},
+	}
+	_, unsafeReport := Check(unsafeContract)
+	unsafeBadge := unsafeReport.Badge()
+
+	if strings.Contains(unsafeBadge, "a holder can verify") {
+		t.Errorf("unsafe badge must NOT contain 'a holder can verify'; badge:\n%s", unsafeBadge)
+	}
+	if strings.Contains(unsafeBadge, "requires 0-of") {
+		t.Errorf("unsafe badge must NOT contain 'requires 0-of'; badge:\n%s", unsafeBadge)
+	}
+	if strings.Contains(unsafeBadge, "capped -1") {
+		t.Errorf("unsafe badge must NOT contain 'capped -1'; badge:\n%s", unsafeBadge)
+	}
+	if !strings.Contains(unsafeBadge, "UNSAFE") && !strings.Contains(unsafeBadge, "⚠") {
+		t.Errorf("unsafe badge must contain a warning marker (UNSAFE or ⚠); badge:\n%s", unsafeBadge)
+	}
+}
+
 // TestUnconservedValue checks that a Supply not referenced by any conserves
 // invariant produces UNCONSERVED_VALUE.
 func TestUnconservedValue(t *testing.T) {

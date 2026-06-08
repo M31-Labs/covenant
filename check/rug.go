@@ -57,15 +57,22 @@ func (r RugSurfaceReport) Badge() string {
 	} else {
 		for _, m := range r.Mints {
 			signerList := strings.Join(m.Signers, ", ")
-			fmt.Fprintf(&b,
-				"   mint %q:  capped %s %s  ·  requires %d-of-%d { %s }\n",
-				m.Name,
-				formatInt(m.Cap),
-				m.Unit,
-				m.Quorum,
-				len(m.Signers),
-				signerList,
-			)
+
+			var capStr string
+			if m.Cap >= 0 {
+				capStr = fmt.Sprintf("capped %s %s", formatInt(m.Cap), m.Unit)
+			} else {
+				capStr = "UNCAPPED ⚠"
+			}
+
+			var quorumStr string
+			if m.Quorum >= 1 {
+				quorumStr = fmt.Sprintf("requires %d-of-%d { %s }", m.Quorum, len(m.Signers), signerList)
+			} else {
+				quorumStr = "NO QUORUM ⚠ (any single signer can mint)"
+			}
+
+			fmt.Fprintf(&b, "   mint %q:  %s  ·  %s\n", m.Name, capStr, quorumStr)
 		}
 	}
 
@@ -88,8 +95,23 @@ func (r RugSurfaceReport) Badge() string {
 		b.WriteString("   ✗ supply hard-capped\n")
 	}
 
+	// Compute overall safety: all flags green AND every mint is capped + quorum'd.
+	safe := r.NoHiddenMint && r.SupplyHardCapped && r.NoDiscretionaryPayout && r.NoFreeze && r.NoFee
+	if safe {
+		for _, m := range r.Mints {
+			if m.Quorum < 1 || m.Cap < 0 {
+				safe = false
+				break
+			}
+		}
+	}
+
 	b.WriteString("\n")
-	b.WriteString("   → a holder can verify: nobody mints past the cap, nobody mints without quorum, no backdoor.\n")
+	if safe || r.Clean() {
+		b.WriteString("   → a holder can verify: nobody mints past the cap, nobody mints without quorum, no backdoor.\n")
+	} else {
+		b.WriteString("   ⚠ UNSAFE — this contract declares powers that can rug holders (see the ✗ / ⚠ lines above). This is NOT a clean trust badge.\n")
+	}
 
 	return b.String()
 }
