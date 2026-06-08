@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"m31labs.dev/covenant/chain"
 	"m31labs.dev/covenant/check"
 )
 
@@ -135,6 +136,74 @@ func TestExplainUnsafeContract(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("expected %q in output:\n%s", want, out)
 		}
+	}
+}
+
+func TestChainplanDefaultSepolia(t *testing.T) {
+	out, code := runChainplan(flagship, "", false)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"Covenant chain plan",
+		"evm-sepolia",
+		"Sepolia",
+		"source sha256",
+		"proof  sha256",
+		"SAFE to anchor",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestChainplanJSON(t *testing.T) {
+	out, code := runChainplan("../../examples/policy_token.cov", "solana-devnet", true)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput:\n%s", code, out)
+	}
+
+	var plan chain.Plan
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatalf("expected valid JSON: %v\n%s", err, out)
+	}
+	if plan.Schema != "m31labs.covenant.chain_plan.v1" {
+		t.Fatalf("schema=%q", plan.Schema)
+	}
+	if plan.Target.ID != "solana-devnet" {
+		t.Fatalf("target=%+v", plan.Target)
+	}
+	if plan.SourceSHA256 == "" || plan.ProofSHA256 == "" {
+		t.Fatalf("missing hashes: %+v", plan)
+	}
+	if !plan.Safe {
+		t.Fatalf("policy token should be safe: %+v", plan)
+	}
+}
+
+func TestChainplanUnsafeReturnsPlanAndNonzero(t *testing.T) {
+	out, code := runChainplan("../../examples/_bad_uncapped_mint.cov", "evm-sepolia", true)
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d\noutput:\n%s", code, out)
+	}
+
+	var plan chain.Plan
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatalf("expected valid JSON even for unsafe plan: %v\n%s", err, out)
+	}
+	if plan.Safe {
+		t.Fatalf("unsafe contract must not produce safe chain plan: %+v", plan)
+	}
+}
+
+func TestChainplanUnknownTarget(t *testing.T) {
+	out, code := runChainplan(flagship, "moonbase-mainnet-ish", false)
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d\noutput:\n%s", code, out)
+	}
+	if !strings.Contains(out, "unknown chain target") || !strings.Contains(out, "evm-sepolia") {
+		t.Fatalf("expected unknown target help, got:\n%s", out)
 	}
 }
 

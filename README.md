@@ -138,6 +138,7 @@ go build ./cmd/covenant
 covenant check       examples/community_token.cov
 covenant rugsurface  examples/community_token.cov
 covenant explain     examples/community_token.cov
+covenant chainplan   examples/community_token.cov --target=evm-sepolia
 covenant run         examples/community_token.cov issue recipient=alice amount=500000 \
                        --caller=founder --now=1 --approvals=founder,treasurer
 ```
@@ -163,5 +164,27 @@ The guarantee strengthens up an enforcement ladder:
 1. **Language (here, v1)** — you cannot *author* a quiet rug; clean contracts are provably power-free.
 2. **+ Anchoring** — operator-signed, hash-chained receipts anchored to an external ledger → rugs become *detectable and attributable*.
 3. **+ Verifiable execution** — a chain / ZK-proven VM / replicated runtime makes the guarantee *enforced at runtime*, even against a dishonest operator. This is where "legitimize all crypto" lands.
+
+## Chain + testnet story
+
+Covenant is chain-agnostic at the language layer. The first chain integration is
+**anchor-only**: publish the Covenant source hash, rug-surface proof hash, and
+receipt-chain heads to a minimal registry contract/program. That makes the v1
+language guarantee public and auditable without pretending the chain is already
+executing Covenant.
+
+```sh
+covenant chainplan examples/policy_token.cov --target=evm-sepolia
+covenant chainplan examples/policy_token.cov --target=solana-devnet --json
+```
+
+Current target defaults:
+
+- `local-evm`: fast local registry iteration before any public testnet.
+- `evm-sepolia`: default public EVM app/testnet target.
+- `evm-hoodi`: Ethereum validator/protocol-infra rehearsal, not default app testing.
+- `starknet-sepolia`: Cairo/ZK-oriented proof registry experiments.
+- `solana-devnet`: Solana app/wallet/explorer proof registry target.
+- `solana-testnet`: Solana validator/stress testing after Devnet works.
 
 Also queued: a bytecode VM (with the current interpreter as the differential-proof oracle); the agreement/state-machine shape (escrow, vesting, auctions) with governed gates and migration; exact-decimal money types; and a published verifier for the canonical rug-surface JSON proof.

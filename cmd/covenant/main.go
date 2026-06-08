@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"m31labs.dev/covenant/chain"
 	"m31labs.dev/covenant/check"
 	"m31labs.dev/covenant/diag"
 	"m31labs.dev/covenant/grammar"
@@ -47,6 +48,15 @@ func dispatch(args []string) (string, int) {
 			return "covenant explain: missing <file>\n", 1
 		}
 		return runExplain(args[1])
+	case "chainplan":
+		if len(args) < 2 {
+			return "covenant chainplan: missing <file>\n", 1
+		}
+		path, target, jsonOut := parseChainplanArgs(args[1:])
+		if path == "" {
+			return "covenant chainplan: missing <file>\n", 1
+		}
+		return runChainplan(path, target, jsonOut)
 	case "run":
 		if len(args) < 3 {
 			return "covenant run: usage: covenant run <file> <action> [key=value ...] [--caller=X] [--now=N] [--approvals=a,b]\n", 1
@@ -57,6 +67,38 @@ func dispatch(args []string) (string, int) {
 	default:
 		return fmt.Sprintf("covenant: unknown command %q\n\n", args[0]) + usage(), 1
 	}
+}
+
+// ── chainplan ────────────────────────────────────────────────────────────────
+
+func runChainplan(path, target string, jsonOut bool) (string, int) {
+	if target == "" {
+		target = "evm-sepolia"
+	}
+	src, contract, ds, exitCode := loadAndCheck(path)
+	_, report := checkIfContract(contract)
+
+	plan, err := chain.Build(target, src, report)
+	if err != nil {
+		return fmt.Sprintf("covenant chainplan: %v\n%s", err, chainTargetsHelp()), 1
+	}
+	if jsonOut {
+		out, err := plan.JSON()
+		if err != nil {
+			return fmt.Sprintf("covenant chainplan: cannot render JSON: %v\n", err), 1
+		}
+		return out, exitCode
+	}
+
+	var sb strings.Builder
+	if len(ds) > 0 {
+		for _, d := range ds {
+			sb.WriteString(d.Teach())
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString(plan.Text())
+	return sb.String(), exitCode
 }
 
 // ── explain ──────────────────────────────────────────────────────────────────
@@ -384,6 +426,32 @@ func parseRugsurfaceArgs(args []string) (path string, jsonOut bool) {
 	return path, jsonOut
 }
 
+func parseChainplanArgs(args []string) (path, target string, jsonOut bool) {
+	target = "evm-sepolia"
+	for _, a := range args {
+		switch {
+		case a == "--json":
+			jsonOut = true
+		case strings.HasPrefix(a, "--target="):
+			target = strings.TrimPrefix(a, "--target=")
+		default:
+			if path == "" {
+				path = a
+			}
+		}
+	}
+	return path, target, jsonOut
+}
+
+func chainTargetsHelp() string {
+	var sb strings.Builder
+	sb.WriteString("available targets:\n")
+	for _, t := range chain.Targets() {
+		fmt.Fprintf(&sb, "  %s (%s / %s)\n", t.ID, t.Stack, t.Network)
+	}
+	return sb.String()
+}
+
 // isAllDigits returns true if s is non-empty and every byte is '0'..'9'.
 func isAllDigits(s string) bool {
 	if s == "" {
@@ -485,6 +553,7 @@ USAGE
   covenant check <file>                         check a contract for errors
   covenant rugsurface <file> [--json]           print the trust badge or JSON proof
   covenant explain <file>                       explain the proof in plain language
+  covenant chainplan <file> [--target=ID]       plan testnet anchoring
   covenant run <file> <action> [key=value ...]  execute a contract action
               [--caller=X] [--now=N] [--approvals=a,b,c]
 
@@ -492,6 +561,7 @@ EXAMPLES
   covenant check examples/community_token.cov
   covenant rugsurface examples/community_token.cov
   covenant explain examples/community_token.cov
+  covenant chainplan examples/community_token.cov --target=evm-sepolia
   covenant run examples/community_token.cov issue recipient=alice amount=500000 \
               --caller=founder --now=1 --approvals=founder,treasurer
 `
