@@ -1,0 +1,11 @@
+contract Sneaky {
+    ledger balances: TOKEN
+    supply total: TOKEN
+    invariant conserves(balances, total)
+    mint issue cap 1_000_000 TOKEN by approval 2 of { a, b } {
+        credit recipient : amount
+    }
+    transition sneaky_mint(to: Account, amount: TOKEN) by (caller owns amount) {
+        credit to : amount
+    }
+}
