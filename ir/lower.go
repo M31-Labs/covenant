@@ -81,6 +81,10 @@ func Lower(tree *gotreesitter.Tree, src []byte) (*Contract, []diag.Diagnostic) {
 	for i := 0; i < contractNode.NamedChildCount(); i++ {
 		child := contractNode.NamedChild(i)
 		switch child.Type(lang) {
+		case "policy_decl":
+			p, pds := lowerPolicy(child, src, lang)
+			ds = append(ds, pds...)
+			c.Policies = append(c.Policies, p)
 		case "ledger_decl":
 			c.Ledgers = append(c.Ledgers, lowerLedger(child, src, lang))
 		case "supply_decl":
@@ -102,6 +106,47 @@ func Lower(tree *gotreesitter.Tree, src []byte) (*Contract, []diag.Diagnostic) {
 	}
 
 	return c, ds
+}
+
+func lowerPolicy(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (Policy, []diag.Diagnostic) {
+	var ds []diag.Diagnostic
+	line, _ := sourceLineCol(n)
+	p := Policy{
+		Name: nodeText(childByFieldDeep(n, "name", lang), src),
+		Line: line,
+	}
+
+	threshNode := childByFieldDeep(n, "threshold", lang)
+	if threshNode != nil {
+		v, err := strconv.Atoi(nodeText(threshNode, src))
+		if err != nil {
+			threshLine, threshCol := sourceLineCol(threshNode)
+			ds = append(ds, diag.Diagnostic{
+				Severity: diag.Error,
+				Line:     threshLine,
+				Col:      threshCol,
+				Code:     "LOWER_MALFORMED_POLICY",
+				Message:  "policy threshold is not a valid integer: " + nodeText(threshNode, src),
+				Why:      "approval threshold must be a whole number",
+				Fix:      "use a whole number, e.g. `policy council = approval 2 of { ... }`",
+			})
+		} else {
+			p.Quorum = v
+		}
+	}
+
+	for _, child := range childrenByFieldDeep(n, "approver", lang) {
+		p.Signers = append(p.Signers, nodeText(child, src))
+	}
+
+	timelockNode := firstNodeOfType(n, "timelock_clause", lang)
+	if timelockNode != nil {
+		seconds, tds := lowerDuration(timelockNode, src, lang, "LOWER_MALFORMED_POLICY")
+		ds = append(ds, tds...)
+		p.TimelockSeconds = seconds
+	}
+
+	return p, ds
 }
 
 func lowerLedger(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Ledger {
@@ -164,33 +209,77 @@ func lowerMint(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (M
 	}
 
 	// Parse threshold (quorum M).
-	threshNode := n.ChildByFieldName("threshold", lang)
-	if threshNode != nil {
-		v, err := strconv.Atoi(nodeText(threshNode, src))
-		if err != nil {
-			threshLine, threshCol := sourceLineCol(threshNode)
-			ds = append(ds, diag.Diagnostic{
-				Severity: diag.Error,
-				Line:     threshLine,
-				Col:      threshCol,
-				Code:     "LOWER_MALFORMED_MINT",
-				Message:  "mint threshold is not a valid integer: " + nodeText(threshNode, src),
-				Why:      "approval threshold must be a whole number",
-				Fix:      "use a whole number, e.g. `approval 2 of { ... }`",
-			})
-		} else {
-			m.Quorum = v
+	authNode := n.ChildByFieldName("auth", lang)
+	if authNode != nil {
+		switch authNode.Type(lang) {
+		case "approval_inline":
+			threshNode := authNode.ChildByFieldName("threshold", lang)
+			if threshNode != nil {
+				v, err := strconv.Atoi(nodeText(threshNode, src))
+				if err != nil {
+					threshLine, threshCol := sourceLineCol(threshNode)
+					ds = append(ds, diag.Diagnostic{
+						Severity: diag.Error,
+						Line:     threshLine,
+						Col:      threshCol,
+						Code:     "LOWER_MALFORMED_MINT",
+						Message:  "mint threshold is not a valid integer: " + nodeText(threshNode, src),
+						Why:      "approval threshold must be a whole number",
+						Fix:      "use a whole number, e.g. `approval 2 of { ... }`",
+					})
+				} else {
+					m.Quorum = v
+				}
+			}
+			for i := 0; i < authNode.ChildCount(); i++ {
+				if authNode.FieldNameForChild(i, lang) == "approver" {
+					child := authNode.Child(i)
+					if child != nil {
+						m.Signers = append(m.Signers, nodeText(child, src))
+					}
+				}
+			}
+		case "approval_policy_ref":
+			policyNode := authNode.ChildByFieldName("policy", lang)
+			m.Policy = nodeText(policyNode, src)
+			if m.Policy == "" {
+				m.Policy = nodeText(authNode, src)
+			}
+		default:
+			m.Policy = nodeText(authNode, src)
 		}
 	}
 
-	// Collect repeated approver fields by iterating all children.
-	for i := 0; i < n.ChildCount(); i++ {
-		if n.FieldNameForChild(i, lang) == "approver" {
-			child := n.Child(i)
-			if child != nil {
-				m.Signers = append(m.Signers, nodeText(child, src))
+	rateNode := n.ChildByFieldName("rate", lang)
+	if rateNode == nil {
+		for i := 0; i < n.NamedChildCount(); i++ {
+			child := n.NamedChild(i)
+			if child.Type(lang) == "rate_clause" {
+				rateNode = child
+				break
 			}
 		}
+	}
+	if rateNode != nil {
+		rate, rds := lowerRate(rateNode, src, lang)
+		ds = append(ds, rds...)
+		m.Rate = rate
+	}
+
+	timelockNode := n.ChildByFieldName("timelock", lang)
+	if timelockNode == nil {
+		for i := 0; i < n.NamedChildCount(); i++ {
+			child := n.NamedChild(i)
+			if child.Type(lang) == "timelock_clause" {
+				timelockNode = child
+				break
+			}
+		}
+	}
+	if timelockNode != nil {
+		seconds, tds := lowerDuration(timelockNode, src, lang, "LOWER_MALFORMED_MINT")
+		ds = append(ds, tds...)
+		m.TimelockSeconds = seconds
 	}
 
 	// Lower body block.
@@ -200,6 +289,111 @@ func lowerMint(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (M
 	}
 
 	return m, ds
+}
+
+func lowerRate(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) (*RateLimit, []diag.Diagnostic) {
+	var ds []diag.Diagnostic
+	amountNode := n.ChildByFieldName("amount", lang)
+	amount := int64(0)
+	if amountNode != nil {
+		amountStr := strings.ReplaceAll(nodeText(amountNode, src), "_", "")
+		v, err := strconv.ParseInt(amountStr, 10, 64)
+		if err != nil {
+			line, col := sourceLineCol(amountNode)
+			ds = append(ds, diag.Diagnostic{
+				Severity: diag.Error,
+				Line:     line,
+				Col:      col,
+				Code:     "LOWER_MALFORMED_MINT",
+				Message:  "mint rate amount is too large",
+				Why:      "rate limits must fit in a 64-bit integer",
+				Fix:      "use a smaller rate amount",
+			})
+		} else {
+			amount = v
+		}
+	}
+
+	windowSeconds, wds := lowerDuration(n, src, lang, "LOWER_MALFORMED_MINT")
+	ds = append(ds, wds...)
+
+	return &RateLimit{
+		Amount:        amount,
+		Unit:          nodeText(n.ChildByFieldName("type", lang), src),
+		WindowSeconds: windowSeconds,
+	}, ds
+}
+
+func lowerDuration(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language, code string) (int64, []diag.Diagnostic) {
+	var ds []diag.Diagnostic
+	amountNode := n.ChildByFieldName("window", lang)
+	if amountNode == nil {
+		amountNode = n.ChildByFieldName("amount", lang)
+	}
+	unitNode := n.ChildByFieldName("unit", lang)
+	if amountNode == nil || unitNode == nil {
+		return 0, ds
+	}
+
+	raw := strings.ReplaceAll(nodeText(amountNode, src), "_", "")
+	numeric, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		line, col := sourceLineCol(amountNode)
+		ds = append(ds, diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     line,
+			Col:      col,
+			Code:     code,
+			Message:  "duration amount is too large",
+			Why:      "durations must fit in a 64-bit integer",
+			Fix:      "use a smaller duration",
+		})
+		return 0, ds
+	}
+
+	mult, ok := durationUnitSeconds(nodeText(unitNode, src))
+	if !ok {
+		line, col := sourceLineCol(unitNode)
+		ds = append(ds, diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     line,
+			Col:      col,
+			Code:     code,
+			Message:  "unknown duration unit: " + nodeText(unitNode, src),
+			Why:      "Covenant needs exact duration units for deterministic runtime checks",
+			Fix:      "use seconds, minutes, hours, or days",
+		})
+		return 0, ds
+	}
+	if numeric > 0 && mult > 0 && numeric > (1<<63-1)/mult {
+		line, col := sourceLineCol(amountNode)
+		ds = append(ds, diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     line,
+			Col:      col,
+			Code:     code,
+			Message:  "duration is too large",
+			Why:      "duration seconds must fit in a 64-bit integer",
+			Fix:      "use a smaller duration",
+		})
+		return 0, ds
+	}
+	return numeric * mult, ds
+}
+
+func durationUnitSeconds(unit string) (int64, bool) {
+	switch unit {
+	case "second", "seconds":
+		return 1, true
+	case "minute", "minutes":
+		return 60, true
+	case "hour", "hours":
+		return 60 * 60, true
+	case "day", "days":
+		return 24 * 60 * 60, true
+	default:
+		return 0, false
+	}
 }
 
 func lowerTransition(n *gotreesitter.Node, src []byte, lang *gotreesitter.Language) Transition {
@@ -307,6 +501,58 @@ func nodeText(n *gotreesitter.Node, src []byte) string {
 		return ""
 	}
 	return n.Text(src)
+}
+
+func childByFieldDeep(n *gotreesitter.Node, field string, lang *gotreesitter.Language) *gotreesitter.Node {
+	if n == nil {
+		return nil
+	}
+	if child := n.ChildByFieldName(field, lang); child != nil {
+		return child
+	}
+	for i := 0; i < n.NamedChildCount(); i++ {
+		if child := childByFieldDeep(n.NamedChild(i), field, lang); child != nil {
+			return child
+		}
+	}
+	return nil
+}
+
+func childrenByFieldDeep(n *gotreesitter.Node, field string, lang *gotreesitter.Language) []*gotreesitter.Node {
+	var out []*gotreesitter.Node
+	var walk func(*gotreesitter.Node)
+	walk = func(cur *gotreesitter.Node) {
+		if cur == nil {
+			return
+		}
+		for i := 0; i < cur.ChildCount(); i++ {
+			if cur.FieldNameForChild(i, lang) == field {
+				if child := cur.Child(i); child != nil {
+					out = append(out, child)
+				}
+			}
+		}
+		for i := 0; i < cur.NamedChildCount(); i++ {
+			walk(cur.NamedChild(i))
+		}
+	}
+	walk(n)
+	return out
+}
+
+func firstNodeOfType(n *gotreesitter.Node, typ string, lang *gotreesitter.Language) *gotreesitter.Node {
+	if n == nil {
+		return nil
+	}
+	if n.Type(lang) == typ {
+		return n
+	}
+	for i := 0; i < n.NamedChildCount(); i++ {
+		if child := firstNodeOfType(n.NamedChild(i), typ, lang); child != nil {
+			return child
+		}
+	}
+	return nil
 }
 
 // sourceLineCol returns the 1-based line and 0-based column from a node's

@@ -4,6 +4,8 @@ import (
 	"os"
 	"testing"
 
+	"m31labs.dev/covenant/check"
+	"m31labs.dev/covenant/diag"
 	"m31labs.dev/covenant/grammar"
 	"m31labs.dev/covenant/interp"
 	"m31labs.dev/covenant/ir"
@@ -24,6 +26,31 @@ func loadContract(t *testing.T) *ir.Contract {
 	c, diags := ir.Lower(tree, src)
 	if len(diags) != 0 {
 		t.Fatalf("Lower diags: %v", diags)
+	}
+	return c
+}
+
+func loadCheckedContract(t *testing.T, path string) *ir.Contract {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	c, diags := ir.Lower(tree, src)
+	for _, d := range diags {
+		if d.Severity == diag.Error {
+			t.Fatalf("lower error: %s", d.Teach())
+		}
+	}
+	checkDiags, _ := check.Check(c)
+	for _, d := range checkDiags {
+		if d.Severity == diag.Error {
+			t.Fatalf("check error: %s", d.Teach())
+		}
 	}
 	return c
 }
@@ -339,5 +366,49 @@ func TestReceiptDeterministic(t *testing.T) {
 	}
 	if r1.Hash == "" {
 		t.Error("Hash must not be empty")
+	}
+}
+
+func TestPolicyMintTimelockAndRate(t *testing.T) {
+	c := loadCheckedContract(t, "../examples/policy_token.cov")
+	st := state.New()
+
+	beforeTimelock := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "alice", "amount": int64(50_000)},
+		interp.Context{Caller: "founder", Now: 1, Approvals: []string{"founder", "treasurer"}},
+	)
+	if beforeTimelock.OK || beforeTimelock.Reason != "MINT_TIMELOCK_PENDING" {
+		t.Fatalf("want MINT_TIMELOCK_PENDING, got OK=%v Reason=%q", beforeTimelock.OK, beforeTimelock.Reason)
+	}
+
+	afterTimelock := int64(7 * 24 * 60 * 60)
+	first := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "alice", "amount": int64(60_000)},
+		interp.Context{Caller: "founder", Now: afterTimelock, Approvals: []string{"founder", "treasurer"}},
+	)
+	if !first.OK {
+		t.Fatalf("first mint should pass, got %q", first.Reason)
+	}
+
+	overRate := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "bob", "amount": int64(50_000)},
+		interp.Context{Caller: "founder", Now: afterTimelock + 1, Approvals: []string{"founder", "treasurer"}},
+	)
+	if overRate.OK || overRate.Reason != "MINT_RATE_EXCEEDED" {
+		t.Fatalf("want MINT_RATE_EXCEEDED, got OK=%v Reason=%q", overRate.OK, overRate.Reason)
+	}
+	if st.Balances["bob"] != 0 || st.Supply != 60_000 {
+		t.Fatalf("over-rate rejection must leave state unchanged: supply=%d bob=%d", st.Supply, st.Balances["bob"])
+	}
+
+	nextWindow := interp.Invoke(c, st, "issue",
+		map[string]any{"recipient": "bob", "amount": int64(50_000)},
+		interp.Context{Caller: "founder", Now: afterTimelock + 30*24*60*60, Approvals: []string{"founder", "treasurer"}},
+	)
+	if !nextWindow.OK {
+		t.Fatalf("next-window mint should pass, got %q", nextWindow.Reason)
+	}
+	if st.Supply != 110_000 {
+		t.Fatalf("supply=%d, want 110000", st.Supply)
 	}
 }

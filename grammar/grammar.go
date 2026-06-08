@@ -45,6 +45,7 @@ func CovenantGrammar() *grammargen.Grammar {
 
 	// Hidden choice of the declaration forms allowed inside a contract body.
 	g.Define("_decl", choice(
+		sym("policy_decl"),
 		sym("ledger_decl"),
 		sym("supply_decl"),
 		sym("invariant_decl"),
@@ -80,6 +81,28 @@ func CovenantGrammar() *grammargen.Grammar {
 		str(")"),
 	))
 
+	// policy council = approval 2 of { founder, treasurer, community } [after 7 days]
+	g.Define("policy_decl", choice(
+		sym("policy_decl_timelocked"),
+		sym("policy_decl_plain"),
+	))
+	g.Define("policy_decl_plain", sym("policy_core"))
+	g.Define("policy_decl_timelocked", seq(
+		sym("policy_core"),
+		sym("timelock_clause"),
+	))
+	g.Define("policy_core", seq(
+		str("policy"),
+		field("name", sym("identifier")),
+		str("="),
+		str("approval"),
+		field("threshold", sym("int")),
+		str("of"),
+		str("{"),
+		commaSep(field("approver", sym("identifier"))),
+		str("}"),
+	))
+
 	// mint issue cap 1_000_000 TOKEN by approval 2 of { founder, treasurer, community } { ...ops... }
 	g.Define("mint_decl", seq(
 		str("mint"),
@@ -89,15 +112,43 @@ func CovenantGrammar() *grammargen.Grammar {
 			field("cap", sym("int")),
 		)),
 		field("type", sym("type")),
+		optional(sym("rate_clause")),
 		str("by"),
+		field("auth", choice(
+			sym("approval_policy_ref"),
+			sym("approval_inline"),
+		)),
+		optional(sym("timelock_clause")),
+		field("body", sym("block")),
+	))
+
+	// rate 10_000 TOKEN per 30 days
+	g.Define("rate_clause", seq(
+		str("rate"),
+		field("amount", sym("int")),
+		field("type", sym("type")),
+		str("per"),
+		field("window", sym("int")),
+		field("unit", sym("duration_unit")),
+	))
+
+	// after 7 days
+	g.Define("timelock_clause", seq(
+		str("after"),
+		field("amount", sym("int")),
+		field("unit", sym("duration_unit")),
+	))
+
+	g.Define("approval_inline", seq(
 		str("approval"),
 		field("threshold", sym("int")),
 		str("of"),
 		str("{"),
 		commaSep(field("approver", sym("identifier"))),
 		str("}"),
-		field("body", sym("block")),
 	))
+
+	g.Define("approval_policy_ref", field("policy", sym("identifier")))
 
 	// transition transfer(to: Account, amount: TOKEN) by (caller owns amount) { ...ops... }
 	g.Define("transition_decl", seq(
@@ -183,6 +234,17 @@ func CovenantGrammar() *grammargen.Grammar {
 	// type: an identifier (e.g. TOKEN, Account).
 	g.Define("type", sym("identifier"))
 
+	g.Define("duration_unit", choice(
+		str("second"),
+		str("seconds"),
+		str("minute"),
+		str("minutes"),
+		str("hour"),
+		str("hours"),
+		str("day"),
+		str("days"),
+	))
+
 	// identifier: [A-Za-z_][A-Za-z0-9_]*
 	g.Define("identifier", token(pat(`[A-Za-z_][A-Za-z0-9_]*`)))
 
@@ -198,7 +260,7 @@ func CovenantGrammar() *grammargen.Grammar {
 	// the decl/op rules. Without this, the LR generator reduces `_decl`/`op`
 	// before shifting the next item, producing a large crop of (correctly
 	// shift-resolved) shift/reduce conflicts in the table.
-	g.SetInline("_decl", "op")
+	g.SetInline("_decl", "op", "policy_decl_plain")
 
 	// Whitespace is an EXTRA so it may appear between any tokens.
 	g.SetExtras(pat(`[ \t\r\n]+`))

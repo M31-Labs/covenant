@@ -115,6 +115,19 @@ A contract is an explicit, governed, audited **state machine over money-typed st
 ```
 
 - **Conservation is proven by capability deltas, not author-written holder loops.** A keyed `ledger` exposes only structured ops (`move`/`credit`/`debit`); the compiler proves each action stays in its declared lane, so value can't be created, destroyed, or reassigned through hidden `credit`/`debit` tricks except through a declared, **capped + quorum-gated** capability. The v1 interpreter also does a defensive in-memory invariant recheck before commit.
+- **Governance policies are reusable.** A mint can use a named policy, a timelock, and an emission schedule:
+
+```
+policy council = approval 2 of { founder, treasurer, community } after 7 days
+
+mint issue cap 1_000_000 TOKEN
+    rate 100_000 TOKEN per 30 days
+    by council {
+    credit recipient : amount
+}
+```
+
+The compiler resolves the policy into the rug-surface proof and the runtime rejects `MINT_TIMELOCK_PENDING` or `MINT_RATE_EXCEEDED` before touching state.
 - **Atomic & deterministic runtime.** Every transition runs on a state snapshot: authority → quorum → cap → apply → re-verify conservation → commit-or-revert. No wall-clock, no I/O; the same inputs always yield the same byte-identical receipt.
 - **The badge never lies.** An unsafe contract renders `⚠ UNSAFE`, not a clean check.
 

@@ -20,6 +20,7 @@ import (
 //     at least one conserves(ledger, supply) invariant.
 func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 	var ds []diag.Diagnostic
+	ds = append(ds, resolveMintPolicies(c)...)
 
 	// --- 1. Conservation checks ---
 
@@ -55,6 +56,9 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 		if d := checkMintDuplicateSigners(m); d != nil {
 			ds = append(ds, *d)
 		}
+		if d := checkMintRate(m); d != nil {
+			ds = append(ds, *d)
+		}
 	}
 
 	// --- 3. Conservation-coverage check ---
@@ -87,12 +91,21 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 		signers := make([]string, len(m.Signers))
 		copy(signers, m.Signers)
 		mints = append(mints, MintSurface{
-			Name:    m.Name,
-			Cap:     m.Cap,
-			Unit:    m.Unit,
-			Quorum:  m.Quorum,
-			Signers: signers,
+			Name:            m.Name,
+			Cap:             m.Cap,
+			Unit:            m.Unit,
+			Quorum:          m.Quorum,
+			Signers:         signers,
+			Policy:          m.Policy,
+			TimelockSeconds: m.TimelockSeconds,
 		})
+		if m.Rate != nil {
+			mints[len(mints)-1].Rate = &RateLimitSurface{
+				Amount:        m.Rate.Amount,
+				Unit:          m.Rate.Unit,
+				WindowSeconds: m.Rate.WindowSeconds,
+			}
+		}
 	}
 
 	report := RugSurfaceReport{
@@ -106,6 +119,50 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 	}
 
 	return ds, report
+}
+
+func resolveMintPolicies(c *ir.Contract) []diag.Diagnostic {
+	var ds []diag.Diagnostic
+	policies := make(map[string]ir.Policy, len(c.Policies))
+	for _, p := range c.Policies {
+		if _, exists := policies[p.Name]; exists {
+			ds = append(ds, diag.Diagnostic{
+				Severity: diag.Error,
+				Line:     p.Line,
+				Code:     "POLICY_DUPLICATE",
+				Message:  fmt.Sprintf("policy %q is declared more than once", p.Name),
+				Why:      "duplicate policy names make authority resolution ambiguous",
+				Fix:      "give each policy a unique name",
+			})
+			continue
+		}
+		policies[p.Name] = p
+	}
+
+	for i := range c.Mints {
+		m := &c.Mints[i]
+		if m.Policy == "" {
+			continue
+		}
+		p, ok := policies[m.Policy]
+		if !ok {
+			ds = append(ds, diag.Diagnostic{
+				Severity: diag.Error,
+				Line:     m.Line,
+				Code:     "POLICY_UNKNOWN",
+				Message:  fmt.Sprintf("mint %q references unknown policy %q", m.Name, m.Policy),
+				Why:      "a capability cannot rely on governance that is not declared",
+				Fix:      fmt.Sprintf("declare `policy %s = approval ...` or use inline `by approval ...`", m.Policy),
+			})
+			continue
+		}
+		m.Quorum = p.Quorum
+		m.Signers = append([]string(nil), p.Signers...)
+		if p.TimelockSeconds > m.TimelockSeconds {
+			m.TimelockSeconds = p.TimelockSeconds
+		}
+	}
+	return ds
 }
 
 // checkMintCap returns MINT_UNCAPPED when a mint has no hard cap (Cap == -1).
@@ -173,6 +230,43 @@ func checkMintDuplicateSigners(m ir.Mint) *diag.Diagnostic {
 			}
 		}
 		seen[s] = true
+	}
+	return nil
+}
+
+func checkMintRate(m ir.Mint) *diag.Diagnostic {
+	if m.Rate == nil {
+		return nil
+	}
+	if m.Rate.Amount <= 0 {
+		return &diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     m.Line,
+			Code:     "MINT_BAD_RATE",
+			Message:  fmt.Sprintf("mint %q has a non-positive emission rate", m.Name),
+			Why:      "a rate limit must disclose a positive amount of supply per window",
+			Fix:      "use `rate 10_000 TOKEN per 30 days` with a positive amount and window",
+		}
+	}
+	if m.Rate.WindowSeconds <= 0 {
+		return &diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     m.Line,
+			Code:     "MINT_BAD_RATE",
+			Message:  fmt.Sprintf("mint %q has a non-positive emission window", m.Name),
+			Why:      "a rate limit with no positive time window cannot constrain minting",
+			Fix:      "use `rate 10_000 TOKEN per 30 days` with a positive amount and window",
+		}
+	}
+	if m.Rate.Unit != "" && m.Rate.Unit != m.Unit {
+		return &diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     m.Line,
+			Code:     "MINT_RATE_UNIT_MISMATCH",
+			Message:  fmt.Sprintf("mint %q rate unit %q does not match mint unit %q", m.Name, m.Rate.Unit, m.Unit),
+			Why:      "rate limits must constrain the same unit the mint creates",
+			Fix:      fmt.Sprintf("change the rate unit to `%s`", m.Unit),
+		}
 	}
 	return nil
 }

@@ -134,6 +134,77 @@ func TestRugSurfaceProofJSONAndHash(t *testing.T) {
 	}
 }
 
+func TestPolicyMintSurfaceDisclosesSchedule(t *testing.T) {
+	src, err := os.ReadFile("../examples/policy_token.cov")
+	if err != nil {
+		t.Fatalf("read policy_token.cov: %v", err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, lowerDiags := ir.Lower(tree, src)
+	for _, d := range lowerDiags {
+		if d.Severity == diag.Error {
+			t.Fatalf("lower error: %s", d.Teach())
+		}
+	}
+
+	diagnostics, report := Check(c)
+	for _, d := range diagnostics {
+		if d.Severity == diag.Error {
+			t.Fatalf("unexpected check error: %s", d.Teach())
+		}
+	}
+	if len(report.Mints) != 1 {
+		t.Fatalf("mints=%+v", report.Mints)
+	}
+	m := report.Mints[0]
+	if m.Policy != "council" {
+		t.Fatalf("policy=%q", m.Policy)
+	}
+	if m.Quorum != 2 || len(m.Signers) != 3 {
+		t.Fatalf("resolved authority missing: %+v", m)
+	}
+	if m.TimelockSeconds != 7*24*60*60 {
+		t.Fatalf("timelock=%d", m.TimelockSeconds)
+	}
+	if m.Rate == nil || m.Rate.Amount != 100_000 || m.Rate.WindowSeconds != 30*24*60*60 {
+		t.Fatalf("rate=%+v", m.Rate)
+	}
+	badge := report.Badge()
+	if !strings.Contains(badge, "policy council") || !strings.Contains(badge, "timelock 7 days") || !strings.Contains(badge, "rate 100,000 TOKEN per 30 days") {
+		t.Fatalf("badge missing policy/rate/timelock:\n%s", badge)
+	}
+}
+
+func TestUnknownPolicyRejected(t *testing.T) {
+	c := &ir.Contract{
+		Name: "MissingPolicy",
+		Ledgers: []ir.Ledger{
+			{Name: "balances", Unit: "TOK", Line: 1},
+		},
+		Supply: &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{
+			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
+		},
+		Mints: []ir.Mint{
+			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Policy: "council", Body: []ir.Op{{Kind: ir.OpCredit, Account: "recipient", Amount: "amount", Line: 4}}, Line: 4},
+		},
+	}
+
+	diagnostics, _ := Check(c)
+	found := false
+	for _, d := range diagnostics {
+		if d.Code == "POLICY_UNKNOWN" && d.Severity == diag.Error {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want POLICY_UNKNOWN, got %v", diagnostics)
+	}
+}
+
 // TestUncappedMintRejected checks that a mint with Cap==-1 produces MINT_UNCAPPED.
 func TestUncappedMintRejected(t *testing.T) {
 	c := &ir.Contract{

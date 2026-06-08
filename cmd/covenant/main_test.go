@@ -78,6 +78,31 @@ func TestRugsurfaceJSONForUnsafeIsPureJSON(t *testing.T) {
 	}
 }
 
+func TestRugsurfaceJSONShowsPolicySchedule(t *testing.T) {
+	out, code := runRugsurface("../../examples/policy_token.cov", true)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput:\n%s", code, out)
+	}
+
+	var proof check.RugSurfaceProof
+	if err := json.Unmarshal([]byte(out), &proof); err != nil {
+		t.Fatalf("expected valid JSON proof: %v\n%s", err, out)
+	}
+	if len(proof.Mints) != 1 {
+		t.Fatalf("mints=%+v", proof.Mints)
+	}
+	m := proof.Mints[0]
+	if m.Policy != "council" {
+		t.Fatalf("policy=%q", m.Policy)
+	}
+	if m.TimelockSeconds != 7*24*60*60 {
+		t.Fatalf("timelock=%d", m.TimelockSeconds)
+	}
+	if m.Rate == nil || m.Rate.Amount != 100_000 || m.Rate.WindowSeconds != 30*24*60*60 {
+		t.Fatalf("rate=%+v", m.Rate)
+	}
+}
+
 // TestRunMintWithinCap verifies a successful mint invocation.
 func TestRunMintWithinCap(t *testing.T) {
 	out, code := runRun(

@@ -1,0 +1,19 @@
+contract PolicyToken {
+    policy council = approval 2 of { founder, treasurer, community } after 7 days
+
+    ledger balances: TOKEN
+    supply total: TOKEN
+    invariant conserves(balances, total)
+
+    mint issue cap 1_000_000 TOKEN rate 100_000 TOKEN per 30 days by council {
+        credit recipient : amount
+    }
+
+    transition transfer(to: Account, amount: TOKEN) by (caller owns amount) {
+        move balances: caller -> to : amount
+    }
+
+    burn retire by (caller owns amount) {
+        debit caller : amount
+    }
+}

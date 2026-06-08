@@ -10,11 +10,20 @@ import (
 // MintSurface describes the disclosed mint power of a single declared mint
 // capability. Every field is a verifiable on-chain constraint.
 type MintSurface struct {
-	Name    string   `json:"name"`
-	Cap     int64    `json:"cap"`
-	Unit    string   `json:"unit"`
-	Quorum  int      `json:"quorum"`
-	Signers []string `json:"signers"`
+	Name            string            `json:"name"`
+	Cap             int64             `json:"cap"`
+	Unit            string            `json:"unit"`
+	Quorum          int               `json:"quorum"`
+	Signers         []string          `json:"signers"`
+	Policy          string            `json:"policy,omitempty"`
+	TimelockSeconds int64             `json:"timelock_seconds,omitempty"`
+	Rate            *RateLimitSurface `json:"rate,omitempty"`
+}
+
+type RateLimitSurface struct {
+	Amount        int64  `json:"amount"`
+	Unit          string `json:"unit"`
+	WindowSeconds int64  `json:"window_seconds"`
 }
 
 // RugSurfaceReport is the trust badge a token shows its holders. It proves
@@ -142,6 +151,19 @@ func (r RugSurfaceReport) Badge() string {
 			}
 
 			fmt.Fprintf(&b, "   mint %q:  %s  ·  %s\n", m.Name, capStr, quorumStr)
+			if m.Policy != "" || m.TimelockSeconds > 0 || m.Rate != nil {
+				var clauses []string
+				if m.Policy != "" {
+					clauses = append(clauses, fmt.Sprintf("policy %s", m.Policy))
+				}
+				if m.TimelockSeconds > 0 {
+					clauses = append(clauses, fmt.Sprintf("timelock %s", formatDuration(m.TimelockSeconds)))
+				}
+				if m.Rate != nil {
+					clauses = append(clauses, fmt.Sprintf("rate %s %s per %s", formatInt(m.Rate.Amount), m.Rate.Unit, formatDuration(m.Rate.WindowSeconds)))
+				}
+				fmt.Fprintf(&b, "      %s\n", strings.Join(clauses, "  ·  "))
+			}
 		}
 	}
 
@@ -175,6 +197,34 @@ func (r RugSurfaceReport) Badge() string {
 	}
 
 	return b.String()
+}
+
+func formatDuration(seconds int64) string {
+	switch {
+	case seconds%(24*60*60) == 0:
+		n := seconds / (24 * 60 * 60)
+		if n == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", n)
+	case seconds%(60*60) == 0:
+		n := seconds / (60 * 60)
+		if n == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", n)
+	case seconds%60 == 0:
+		n := seconds / 60
+		if n == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", n)
+	default:
+		if seconds == 1 {
+			return "1 second"
+		}
+		return fmt.Sprintf("%d seconds", seconds)
+	}
 }
 
 // formatInt formats an int64 with thousands separators, e.g. 1000000 → "1,000,000".

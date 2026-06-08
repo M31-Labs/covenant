@@ -98,3 +98,41 @@ func TestLowerFlagship(t *testing.T) {
 		t.Fatalf("transfer body=%+v", body)
 	}
 }
+
+func TestLowerPolicyMintFeatures(t *testing.T) {
+	src, err := os.ReadFile("../examples/policy_token.cov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, diags := Lower(tree, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diags: %v", diags)
+	}
+	if len(c.Policies) != 1 {
+		t.Fatalf("policies=%+v", c.Policies)
+	}
+	p := c.Policies[0]
+	if p.Name != "council" || p.Quorum != 2 || len(p.Signers) != 3 {
+		t.Fatalf("policy=%+v", p)
+	}
+	if p.TimelockSeconds != 7*24*60*60 {
+		t.Fatalf("policy timelock=%d", p.TimelockSeconds)
+	}
+	if len(c.Mints) != 1 {
+		t.Fatalf("mints=%+v", c.Mints)
+	}
+	m := c.Mints[0]
+	if m.Policy != "council" {
+		t.Fatalf("mint policy=%q", m.Policy)
+	}
+	if m.Rate == nil {
+		t.Fatal("mint rate missing")
+	}
+	if m.Rate.Amount != 100_000 || m.Rate.WindowSeconds != 30*24*60*60 {
+		t.Fatalf("mint rate=%+v", m.Rate)
+	}
+}

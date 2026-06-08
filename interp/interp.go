@@ -102,6 +102,24 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 		if foundMint.Cap >= 0 && minted > foundMint.Cap-st.Supply {
 			return reject(base, "MINT_CAP_EXCEEDED")
 		}
+		if foundMint.TimelockSeconds > 0 && ctx.Now < foundMint.TimelockSeconds {
+			return reject(base, "MINT_TIMELOCK_PENDING")
+		}
+		if foundMint.Rate != nil {
+			if foundMint.Rate.WindowSeconds <= 0 || foundMint.Rate.Amount <= 0 {
+				return reject(base, "MINT_RATE_INVALID")
+			}
+			window, ok := st.MintWindows[foundMint.Name]
+			if !ok || ctx.Now >= window.Start+foundMint.Rate.WindowSeconds {
+				window = state.MintWindow{Start: ctx.Now}
+			}
+			if ctx.Now < window.Start {
+				return reject(base, "TIME_WENT_BACKWARD")
+			}
+			if minted > foundMint.Rate.Amount-window.Minted {
+				return reject(base, "MINT_RATE_EXCEEDED")
+			}
+		}
 	}
 
 	if foundTransition != nil || foundBurn != nil {
@@ -173,6 +191,25 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 		}
 	}
 
+	if foundMint != nil && foundMint.Rate != nil {
+		var minted int64
+		for _, op := range foundMint.Body {
+			if op.Kind == ir.OpCredit {
+				amt, aerr := resolveAmount(op.Amount, args)
+				if aerr != "" {
+					return reject(base, aerr)
+				}
+				minted += amt
+			}
+		}
+		window, ok := snap.MintWindows[foundMint.Name]
+		if !ok || ctx.Now >= window.Start+foundMint.Rate.WindowSeconds {
+			window = state.MintWindow{Start: ctx.Now}
+		}
+		window.Minted += minted
+		snap.MintWindows[foundMint.Name] = window
+	}
+
 	// 4. Post-checks on the snapshot.
 	for acct, bal := range snap.Balances {
 		if bal < 0 {
@@ -195,6 +232,7 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 
 	st.Balances = snap.Balances
 	st.Supply = snap.Supply
+	st.MintWindows = snap.MintWindows
 
 	r := base
 	r.OK = true
