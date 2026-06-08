@@ -137,6 +137,7 @@ The compiler resolves the policy into the rug-surface proof and the runtime reje
 go build ./cmd/covenant
 covenant check       examples/community_token.cov
 covenant rugsurface  examples/community_token.cov
+covenant explain     examples/community_token.cov
 covenant run         examples/community_token.cov issue recipient=alice amount=500000 \
                        --caller=founder --now=1 --approvals=founder,treasurer
 ```

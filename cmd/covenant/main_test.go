@@ -103,6 +103,41 @@ func TestRugsurfaceJSONShowsPolicySchedule(t *testing.T) {
 	}
 }
 
+func TestExplainPolicyToken(t *testing.T) {
+	out, code := runExplain("../../examples/policy_token.cov")
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"Covenant explain",
+		"static checks pass",
+		"policy council",
+		"timelock: 7 days",
+		"emission: at most 100,000 TOKEN per 30 days",
+		"Result: SAFE",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestExplainUnsafeContract(t *testing.T) {
+	out, code := runExplain("../../examples/_bad_uncapped_mint.cov")
+	if code != 1 {
+		t.Fatalf("expected exit 1, got %d\noutput:\n%s", code, out)
+	}
+	for _, want := range []string{
+		"rug risk",
+		"hard cap",
+		"Result: UNSAFE",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output:\n%s", want, out)
+		}
+	}
+}
+
 // TestRunMintWithinCap verifies a successful mint invocation.
 func TestRunMintWithinCap(t *testing.T) {
 	out, code := runRun(

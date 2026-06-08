@@ -42,6 +42,11 @@ func dispatch(args []string) (string, int) {
 			return "covenant rugsurface: missing <file>\n", 1
 		}
 		return runRugsurface(path, jsonOut)
+	case "explain":
+		if len(args) < 2 {
+			return "covenant explain: missing <file>\n", 1
+		}
+		return runExplain(args[1])
 	case "run":
 		if len(args) < 3 {
 			return "covenant run: usage: covenant run <file> <action> [key=value ...] [--caller=X] [--now=N] [--approvals=a,b]\n", 1
@@ -52,6 +57,75 @@ func dispatch(args []string) (string, int) {
 	default:
 		return fmt.Sprintf("covenant: unknown command %q\n\n", args[0]) + usage(), 1
 	}
+}
+
+// ── explain ──────────────────────────────────────────────────────────────────
+
+func runExplain(path string) (string, int) {
+	_, contract, ds, exitCode := loadAndCheck(path)
+	_, report := checkIfContract(contract)
+
+	var sb strings.Builder
+	name := path
+	if contract != nil && contract.Name != "" {
+		name = contract.Name
+	}
+	fmt.Fprintf(&sb, "Covenant explain — %s\n\n", name)
+
+	if len(ds) == 0 {
+		sb.WriteString("✓ static checks pass\n")
+	} else {
+		for _, d := range ds {
+			if d.Severity == diag.Error {
+				sb.WriteString("✗ static checks found a rug risk\n")
+				break
+			}
+		}
+		for _, d := range ds {
+			sb.WriteString("\n")
+			sb.WriteString(d.Teach())
+		}
+	}
+
+	if hash, err := report.ProofHash(); err == nil && hash != "" {
+		fmt.Fprintf(&sb, "proof: sha256:%s\n", hash)
+	}
+
+	if len(report.Mints) == 0 {
+		sb.WriteString("\nMint power: none declared. Empty mint surface.\n")
+	} else {
+		sb.WriteString("\nMint power:\n")
+		for _, m := range report.Mints {
+			fmt.Fprintf(&sb, "- %s: cap %s %s, approval %d-of-%d", m.Name, formatAmount(m.Cap), m.Unit, m.Quorum, len(m.Signers))
+			if m.Policy != "" {
+				fmt.Fprintf(&sb, ", policy %s", m.Policy)
+			}
+			sb.WriteString("\n")
+			if len(m.Signers) > 0 {
+				fmt.Fprintf(&sb, "  signers: %s\n", strings.Join(m.Signers, ", "))
+			}
+			if m.TimelockSeconds > 0 {
+				fmt.Fprintf(&sb, "  timelock: %s\n", formatSeconds(m.TimelockSeconds))
+			}
+			if m.Rate != nil {
+				fmt.Fprintf(&sb, "  emission: at most %s %s per %s\n", formatAmount(m.Rate.Amount), m.Rate.Unit, formatSeconds(m.Rate.WindowSeconds))
+			}
+		}
+	}
+
+	sb.WriteString("\nAbsences:\n")
+	writeAbsence(&sb, report.NoHiddenMint, "no hidden mint")
+	writeAbsence(&sb, report.NoDiscretionaryPayout, "no discretionary payout")
+	writeAbsence(&sb, report.NoFreeze, "no freeze")
+	writeAbsence(&sb, report.NoFee, "no fee")
+	writeAbsence(&sb, report.SupplyHardCapped, "supply hard-capped")
+
+	if report.Safe() {
+		sb.WriteString("\nResult: SAFE for v1 language-level guarantees. Dangerous powers are loud, bounded, and disclosed.\n")
+	} else {
+		sb.WriteString("\nResult: UNSAFE. Fix the diagnostics above before showing this contract to holders.\n")
+	}
+	return sb.String(), exitCode
 }
 
 // ── check ─────────────────────────────────────────────────────────────────────
@@ -350,6 +424,9 @@ func parseRunFlags(args []string) (kvargs []string, caller string, now int64, ap
 
 // formatAmount formats an int64 with thousands separators.
 func formatAmount(n int64) string {
+	if n < 0 {
+		return strconv.FormatInt(n, 10)
+	}
 	s := strconv.FormatInt(n, 10)
 	if len(s) <= 3 {
 		return s
@@ -364,6 +441,42 @@ func formatAmount(n int64) string {
 	return string(out)
 }
 
+func formatSeconds(seconds int64) string {
+	switch {
+	case seconds%(24*60*60) == 0:
+		n := seconds / (24 * 60 * 60)
+		if n == 1 {
+			return "1 day"
+		}
+		return fmt.Sprintf("%d days", n)
+	case seconds%(60*60) == 0:
+		n := seconds / (60 * 60)
+		if n == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", n)
+	case seconds%60 == 0:
+		n := seconds / 60
+		if n == 1 {
+			return "1 minute"
+		}
+		return fmt.Sprintf("%d minutes", n)
+	default:
+		if seconds == 1 {
+			return "1 second"
+		}
+		return fmt.Sprintf("%d seconds", seconds)
+	}
+}
+
+func writeAbsence(sb *strings.Builder, ok bool, label string) {
+	if ok {
+		fmt.Fprintf(sb, "✓ %s\n", label)
+		return
+	}
+	fmt.Fprintf(sb, "✗ %s\n", label)
+}
+
 // usage returns a short help string.
 func usage() string {
 	return `covenant — the safe cryptocurrency contract language
@@ -371,12 +484,14 @@ func usage() string {
 USAGE
   covenant check <file>                         check a contract for errors
   covenant rugsurface <file> [--json]           print the trust badge or JSON proof
+  covenant explain <file>                       explain the proof in plain language
   covenant run <file> <action> [key=value ...]  execute a contract action
               [--caller=X] [--now=N] [--approvals=a,b,c]
 
 EXAMPLES
   covenant check examples/community_token.cov
   covenant rugsurface examples/community_token.cov
+  covenant explain examples/community_token.cov
   covenant run examples/community_token.cov issue recipient=alice amount=500000 \
               --caller=founder --now=1 --approvals=founder,treasurer
 `
