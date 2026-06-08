@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
+
+	"m31labs.dev/covenant/check"
 )
 
 const flagship = "../../examples/community_token.cov"
@@ -21,7 +24,7 @@ func TestCheckFlagshipPasses(t *testing.T) {
 
 // TestRugsurfaceShowsBadge verifies the trust badge renders flagship facts.
 func TestRugsurfaceShowsBadge(t *testing.T) {
-	out, code := runRugsurface(flagship)
+	out, code := runRugsurface(flagship, false)
 	if code != 0 {
 		t.Fatalf("expected exit 0, got %d\noutput:\n%s", code, out)
 	}
@@ -30,6 +33,48 @@ func TestRugsurfaceShowsBadge(t *testing.T) {
 	}
 	if !strings.Contains(out, "2-of-3") {
 		t.Fatalf("expected '2-of-3' (quorum) in badge output, got:\n%s", out)
+	}
+}
+
+func TestRugsurfaceJSONShowsProof(t *testing.T) {
+	out, code := runRugsurface(flagship, true)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d\noutput:\n%s", code, out)
+	}
+
+	var proof check.RugSurfaceProof
+	if err := json.Unmarshal([]byte(out), &proof); err != nil {
+		t.Fatalf("expected valid JSON proof: %v\n%s", err, out)
+	}
+	if proof.Schema != "m31labs.covenant.rug_surface.v1" {
+		t.Fatalf("schema=%q", proof.Schema)
+	}
+	if !proof.Safe {
+		t.Fatalf("expected safe proof: %+v", proof)
+	}
+	if len(proof.Mints) != 1 || proof.Mints[0].Cap != 1_000_000 {
+		t.Fatalf("bad mint proof: %+v", proof.Mints)
+	}
+}
+
+func TestRugsurfaceJSONForUnsafeIsPureJSON(t *testing.T) {
+	out, code := runRugsurface("../../examples/_bad_uncapped_mint.cov", true)
+	if code != 1 {
+		t.Fatalf("expected exit 1 for unsafe proof, got %d\noutput:\n%s", code, out)
+	}
+	if strings.Contains(out, "why:") || strings.Contains(out, "fix:") {
+		t.Fatalf("--json output must not include teaching text:\n%s", out)
+	}
+
+	var proof check.RugSurfaceProof
+	if err := json.Unmarshal([]byte(out), &proof); err != nil {
+		t.Fatalf("expected valid JSON proof despite unsafe status: %v\n%s", err, out)
+	}
+	if proof.Safe {
+		t.Fatalf("uncapped mint proof must be unsafe: %+v", proof)
+	}
+	if proof.SupplyHardCapped {
+		t.Fatalf("uncapped mint proof must not claim hard-capped supply: %+v", proof)
 	}
 }
 

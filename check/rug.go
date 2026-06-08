@@ -1,6 +1,8 @@
 package check
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -8,11 +10,11 @@ import (
 // MintSurface describes the disclosed mint power of a single declared mint
 // capability. Every field is a verifiable on-chain constraint.
 type MintSurface struct {
-	Name    string
-	Cap     int64
-	Unit    string
-	Quorum  int
-	Signers []string
+	Name    string   `json:"name"`
+	Cap     int64    `json:"cap"`
+	Unit    string   `json:"unit"`
+	Quorum  int      `json:"quorum"`
+	Signers []string `json:"signers"`
 }
 
 // RugSurfaceReport is the trust badge a token shows its holders. It proves
@@ -36,12 +38,79 @@ type RugSurfaceReport struct {
 	SupplyHardCapped bool
 }
 
+// RugSurfaceProof is the stable, machine-checkable form of the trust badge.
+// Its JSON is deterministic because encoding/json sorts map keys and the
+// struct field order is fixed here.
+type RugSurfaceProof struct {
+	Schema                string        `json:"schema"`
+	Contract              string        `json:"contract"`
+	Mints                 []MintSurface `json:"mints"`
+	NoHiddenMint          bool          `json:"no_hidden_mint"`
+	NoDiscretionaryPayout bool          `json:"no_discretionary_payout"`
+	NoFreeze              bool          `json:"no_freeze"`
+	NoFee                 bool          `json:"no_fee"`
+	SupplyHardCapped      bool          `json:"supply_hard_capped"`
+	Safe                  bool          `json:"safe"`
+	EmptyRugSurface       bool          `json:"empty_rug_surface"`
+}
+
 // Clean returns true when ZERO mint powers are declared — a pure transfer-only
 // token that provably cannot mint, drain, freeze, or fee. A token with a mint
 // returns false even if every other flag is green; it is still SAFE, just not
 // empty-surface.
 func (r RugSurfaceReport) Clean() bool {
 	return len(r.Mints) == 0
+}
+
+// Safe returns true when the report contains no disclosed unsafe power in the
+// v1 surface. Bounded, quorum-gated mints are safe but not empty-surface.
+func (r RugSurfaceReport) Safe() bool {
+	safe := r.NoHiddenMint && r.SupplyHardCapped && r.NoDiscretionaryPayout && r.NoFreeze && r.NoFee
+	if safe {
+		for _, m := range r.Mints {
+			if m.Quorum < 1 || m.Cap < 0 {
+				return false
+			}
+		}
+	}
+	return safe
+}
+
+// Proof returns the canonical machine-readable rug-surface proof.
+func (r RugSurfaceReport) Proof() RugSurfaceProof {
+	mints := make([]MintSurface, len(r.Mints))
+	copy(mints, r.Mints)
+	return RugSurfaceProof{
+		Schema:                "m31labs.covenant.rug_surface.v1",
+		Contract:              r.Contract,
+		Mints:                 mints,
+		NoHiddenMint:          r.NoHiddenMint,
+		NoDiscretionaryPayout: r.NoDiscretionaryPayout,
+		NoFreeze:              r.NoFreeze,
+		NoFee:                 r.NoFee,
+		SupplyHardCapped:      r.SupplyHardCapped,
+		Safe:                  r.Safe(),
+		EmptyRugSurface:       r.Clean(),
+	}
+}
+
+// JSON renders the canonical rug-surface proof as stable indented JSON.
+func (r RugSurfaceReport) JSON() (string, error) {
+	b, err := json.MarshalIndent(r.Proof(), "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(b) + "\n", nil
+}
+
+// ProofHash returns a sha256 over the compact canonical JSON proof.
+func (r RugSurfaceReport) ProofHash() (string, error) {
+	b, err := json.Marshal(r.Proof())
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return fmt.Sprintf("%x", sum), nil
 }
 
 // Badge renders the rug-surface trust badge — a scannable, delightful summary
@@ -95,22 +164,14 @@ func (r RugSurfaceReport) Badge() string {
 		b.WriteString("   ✗ supply hard-capped\n")
 	}
 
-	// Compute overall safety: all flags green AND every mint is capped + quorum'd.
-	safe := r.NoHiddenMint && r.SupplyHardCapped && r.NoDiscretionaryPayout && r.NoFreeze && r.NoFee
-	if safe {
-		for _, m := range r.Mints {
-			if m.Quorum < 1 || m.Cap < 0 {
-				safe = false
-				break
-			}
-		}
-	}
-
 	b.WriteString("\n")
-	if safe || r.Clean() {
+	if r.Safe() || r.Clean() {
 		b.WriteString("   → a holder can verify: nobody mints past the cap, nobody mints without quorum, no backdoor.\n")
 	} else {
 		b.WriteString("   ⚠ UNSAFE — this contract declares powers that can rug holders (see the ✗ / ⚠ lines above). This is NOT a clean trust badge.\n")
+	}
+	if hash, err := r.ProofHash(); err == nil {
+		fmt.Fprintf(&b, "   proof sha256:%s\n", hash[:16])
 	}
 
 	return b.String()

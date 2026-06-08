@@ -42,6 +42,34 @@ $ covenant rugsurface examples/community_token.cov
    ✓ supply hard-capped
 
    → a holder can verify: nobody mints past the cap, nobody mints without quorum, no backdoor.
+   proof sha256:2f48ec08f368be41
+```
+
+The same report has a canonical machine-readable form for wallets, explorers,
+token pages, and CI:
+
+```console
+$ covenant rugsurface examples/community_token.cov --json
+{
+  "schema": "m31labs.covenant.rug_surface.v1",
+  "contract": "CommunityToken",
+  "mints": [
+    {
+      "name": "issue",
+      "cap": 1000000,
+      "unit": "TOKEN",
+      "quorum": 2,
+      "signers": ["founder", "treasurer", "community"]
+    }
+  ],
+  "no_hidden_mint": true,
+  "no_discretionary_payout": true,
+  "no_freeze": true,
+  "no_fee": true,
+  "supply_hard_capped": true,
+  "safe": true,
+  "empty_rug_surface": false
+}
 ```
 
 The guarantees are enforced, not advisory:
@@ -122,4 +150,4 @@ The guarantee strengthens up an enforcement ladder:
 2. **+ Anchoring** — operator-signed, hash-chained receipts anchored to an external ledger → rugs become *detectable and attributable*.
 3. **+ Verifiable execution** — a chain / ZK-proven VM / replicated runtime makes the guarantee *enforced at runtime*, even against a dishonest operator. This is where "legitimize all crypto" lands.
 
-Also queued: a bytecode VM (with the current interpreter as the differential-proof oracle); the agreement/state-machine shape (escrow, vesting, auctions) with governed gates and migration; exact-decimal money types.
+Also queued: a bytecode VM (with the current interpreter as the differential-proof oracle); the agreement/state-machine shape (escrow, vesting, auctions) with governed gates and migration; exact-decimal money types; and a published verifier for the canonical rug-surface JSON proof.

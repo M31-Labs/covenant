@@ -1,6 +1,7 @@
 package check
 
 import (
+	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -78,6 +79,58 @@ func TestFlagshipClean(t *testing.T) {
 	}
 	if !strings.Contains(badge, "2-of-3") {
 		t.Errorf("badge missing 2-of-3 quorum notation; badge:\n%s", badge)
+	}
+}
+
+func TestRugSurfaceProofJSONAndHash(t *testing.T) {
+	src, err := os.ReadFile("../examples/community_token.cov")
+	if err != nil {
+		t.Fatalf("read community_token.cov: %v", err)
+	}
+	tree, err := grammar.Parse(src)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	c, lowerDiags := ir.Lower(tree, src)
+	for _, d := range lowerDiags {
+		if d.Severity == diag.Error {
+			t.Fatalf("lower error: %s", d.Teach())
+		}
+	}
+	_, report := Check(c)
+
+	proofJSON, err := report.JSON()
+	if err != nil {
+		t.Fatalf("JSON: %v", err)
+	}
+
+	var proof RugSurfaceProof
+	if err := json.Unmarshal([]byte(proofJSON), &proof); err != nil {
+		t.Fatalf("proof JSON must parse: %v\n%s", err, proofJSON)
+	}
+	if proof.Schema != "m31labs.covenant.rug_surface.v1" {
+		t.Fatalf("schema=%q", proof.Schema)
+	}
+	if !proof.Safe {
+		t.Fatal("flagship proof should be safe")
+	}
+	if proof.EmptyRugSurface {
+		t.Fatal("flagship has a disclosed mint, so the surface is not empty")
+	}
+	if len(proof.Mints) != 1 || proof.Mints[0].Cap != 1_000_000 || proof.Mints[0].Quorum != 2 {
+		t.Fatalf("bad mint proof: %+v", proof.Mints)
+	}
+
+	h1, err := report.ProofHash()
+	if err != nil {
+		t.Fatalf("ProofHash: %v", err)
+	}
+	h2, err := report.ProofHash()
+	if err != nil {
+		t.Fatalf("ProofHash second call: %v", err)
+	}
+	if h1 == "" || h1 != h2 {
+		t.Fatalf("proof hash must be stable and non-empty: %q / %q", h1, h2)
 	}
 }
 

@@ -37,7 +37,11 @@ func dispatch(args []string) (string, int) {
 		if len(args) < 2 {
 			return "covenant rugsurface: missing <file>\n", 1
 		}
-		return runRugsurface(args[1])
+		path, jsonOut := parseRugsurfaceArgs(args[1:])
+		if path == "" {
+			return "covenant rugsurface: missing <file>\n", 1
+		}
+		return runRugsurface(path, jsonOut)
 	case "run":
 		if len(args) < 3 {
 			return "covenant run: usage: covenant run <file> <action> [key=value ...] [--caller=X] [--now=N] [--approvals=a,b]\n", 1
@@ -92,23 +96,33 @@ func runCheck(path string) (string, int) {
 // runRugsurface prints the rug-surface trust badge for a Covenant file.
 // Exits 0 even when there are errors (badge renders UNSAFE form), but exits 1
 // so scripts can detect it.
-func runRugsurface(path string) (string, int) {
+func runRugsurface(path string, jsonOut bool) (string, int) {
 	_, _, ds, exitCode := loadAndCheck(path)
 
 	var sb strings.Builder
-	for i, d := range ds {
-		if i > 0 {
+	if !jsonOut {
+		for i, d := range ds {
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(d.Teach())
+		}
+		if sb.Len() > 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(d.Teach())
-	}
-	if sb.Len() > 0 {
-		sb.WriteString("\n")
 	}
 
 	// Always print the badge (even on errors — it will show unsafe form).
 	_, _, report := loadForReport(path)
-	sb.WriteString(report.Badge())
+	if jsonOut {
+		proof, err := report.JSON()
+		if err != nil {
+			return fmt.Sprintf("covenant rugsurface: cannot render JSON proof: %v\n", err), 1
+		}
+		sb.WriteString(proof)
+	} else {
+		sb.WriteString(report.Badge())
+	}
 
 	return sb.String(), exitCode
 }
@@ -282,6 +296,20 @@ func parseKVArgs(kvargs []string) map[string]any {
 	return m
 }
 
+func parseRugsurfaceArgs(args []string) (path string, jsonOut bool) {
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOut = true
+		default:
+			if path == "" {
+				path = a
+			}
+		}
+	}
+	return path, jsonOut
+}
+
 // isAllDigits returns true if s is non-empty and every byte is '0'..'9'.
 func isAllDigits(s string) bool {
 	if s == "" {
@@ -342,7 +370,7 @@ func usage() string {
 
 USAGE
   covenant check <file>                         check a contract for errors
-  covenant rugsurface <file>                    print the trust badge
+  covenant rugsurface <file> [--json]           print the trust badge or JSON proof
   covenant run <file> <action> [key=value ...]  execute a contract action
               [--caller=X] [--now=N] [--approvals=a,b,c]
 
