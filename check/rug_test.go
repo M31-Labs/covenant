@@ -636,3 +636,91 @@ func TestUnconservedValue(t *testing.T) {
 		t.Errorf("want UNCONSERVED_VALUE diagnostic, got: %v", diagnostics)
 	}
 }
+
+// hasErr reports whether ds contains any Error-severity diagnostic.
+func hasErr(ds []diag.Diagnostic) bool {
+	for _, d := range ds {
+		if d.Severity == diag.Error {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBadgeUnsafeForLaneViolation locks the badge-never-lies thesis for the
+// capability-lane class: a net-zero drain transition (debit victim / credit
+// caller) has a perfectly safe mint surface but is rejected by Check. The
+// report — text badge AND machine-readable JSON proof — must NOT claim safety.
+// Before the fix, Safe() derived from the mint-surface flags alone and reported
+// safe:true for a contract the compiler rejects.
+func TestBadgeUnsafeForLaneViolation(t *testing.T) {
+	c := &ir.Contract{
+		Name:       "NetZeroDrain",
+		Ledgers:    []ir.Ledger{{Name: "balances", Unit: "TOK", Line: 1}},
+		Supply:     &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3}},
+		Mints: []ir.Mint{
+			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"a", "b"}, Line: 4},
+		},
+		Transitions: []ir.Transition{{
+			Name: "drain", Authority: "caller owns amount", Line: 6,
+			Body: []ir.Op{
+				{Kind: ir.OpDebit, Account: "victim", Amount: "amount", Line: 7},
+				{Kind: ir.OpCredit, Account: "caller", Amount: "amount", Line: 8},
+			},
+		}},
+	}
+
+	ds, report := Check(c)
+	if !hasErr(ds) {
+		t.Fatal("setup: drain transition must produce an Error diagnostic")
+	}
+	if report.Safe() {
+		t.Error("report.Safe() must be false when Check produced an Error diagnostic")
+	}
+	if report.Proof().Safe {
+		t.Error("JSON proof Safe must be false for a contract the compiler rejects")
+	}
+	badge := report.Badge()
+	if strings.Contains(badge, "a holder can verify") {
+		t.Errorf("badge must not claim safety for a rejected contract:\n%s", badge)
+	}
+	if !strings.Contains(badge, "UNSAFE") {
+		t.Errorf("badge must render UNSAFE for a rejected contract:\n%s", badge)
+	}
+}
+
+// TestBadgeUnsafeForCleanContractWithBadTransition covers the subtle Clean()
+// path: a contract with NO mint (empty mint surface) but a draining transition.
+// The badge must not print the "declares NO powers" safety line just because
+// no mint is declared — the static checks still failed.
+func TestBadgeUnsafeForCleanContractWithBadTransition(t *testing.T) {
+	c := &ir.Contract{
+		Name:       "CleanButDrains",
+		Ledgers:    []ir.Ledger{{Name: "balances", Unit: "TOK", Line: 1}},
+		Supply:     &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3}},
+		Transitions: []ir.Transition{{
+			Name: "drain", Authority: "caller owns amount", Line: 5,
+			Body: []ir.Op{
+				{Kind: ir.OpDebit, Account: "victim", Amount: "amount", Line: 6},
+				{Kind: ir.OpCredit, Account: "caller", Amount: "amount", Line: 7},
+			},
+		}},
+	}
+
+	_, report := Check(c)
+	if !report.Clean() {
+		t.Fatal("setup: contract has no mint, want Clean()=true")
+	}
+	if report.Safe() {
+		t.Error("a Clean contract with a draining transition must not be Safe()")
+	}
+	badge := report.Badge()
+	if strings.Contains(badge, "declares NO powers") {
+		t.Errorf("badge must not claim 'declares NO powers' for a draining contract:\n%s", badge)
+	}
+	if !strings.Contains(badge, "UNSAFE") {
+		t.Errorf("badge must render UNSAFE:\n%s", badge)
+	}
+}

@@ -344,6 +344,42 @@ func TestNegativeTransferRejected(t *testing.T) {
 	}
 }
 
+// TestMintOverflowRejected: a mint body that credits `amount` to two recipients
+// sums to 2×amount. With a large amount the sum overflows int64 to a negative
+// value, which (before the fix) slips under the cap check and is committed —
+// minting ~1e19 tokens against a 1e6 cap. The runtime must reject it with
+// MINT_OVERFLOW and leave state untouched.
+func TestMintOverflowRejected(t *testing.T) {
+	c := &ir.Contract{
+		Name:       "TwoCredit",
+		Ledgers:    []ir.Ledger{{Name: "balances", Unit: "TOK", Line: 1}},
+		Supply:     &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3}},
+		Mints: []ir.Mint{{
+			Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2,
+			Signers: []string{"a", "b"}, Line: 4,
+			Body: []ir.Op{
+				{Kind: ir.OpCredit, Account: "r1", Amount: "amount", Line: 5},
+				{Kind: ir.OpCredit, Account: "r2", Amount: "amount", Line: 6},
+			},
+		}},
+	}
+	st := state.New()
+	r := interp.Invoke(c, st, "issue",
+		map[string]any{"r1": "alice", "r2": "bob", "amount": int64(5_000_000_000_000_000_000)},
+		interp.Context{Caller: "a", Now: 1, Approvals: []string{"a", "b"}},
+	)
+	if r.OK {
+		t.Fatalf("overflowing mint must be rejected, got OK with supply=%d", st.Supply)
+	}
+	if r.Reason != "MINT_OVERFLOW" {
+		t.Errorf("Reason=%q, want MINT_OVERFLOW", r.Reason)
+	}
+	if st.Supply != 0 || len(st.Balances) != 0 {
+		t.Errorf("state must be untouched after rejection: supply=%d balances=%v", st.Supply, st.Balances)
+	}
+}
+
 // TestReceiptDeterministic: same inputs → identical Hash.
 func TestReceiptDeterministic(t *testing.T) {
 	c := loadContract(t)

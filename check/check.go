@@ -108,6 +108,17 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 		}
 	}
 
+	// hasError is the authoritative safety gate: the report is safe only when
+	// EVERY check passed. This captures the capability-lane and
+	// conservation-coverage violations that have no mint-surface flag.
+	hasError := false
+	for _, d := range ds {
+		if d.Severity == diag.Error {
+			hasError = true
+			break
+		}
+	}
+
 	report := RugSurfaceReport{
 		Contract:              c.Name,
 		Mints:                 mints,
@@ -116,6 +127,7 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 		NoFreeze:              true, // no such power in v1 grammar
 		NoFee:                 true, // no such power in v1 grammar
 		SupplyHardCapped:      supplyCapped,
+		hasError:              hasError,
 	}
 
 	return ds, report

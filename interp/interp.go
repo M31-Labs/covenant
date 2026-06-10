@@ -68,6 +68,9 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 	}
 
 	// 2. Authority / guard checks (BEFORE snapshot mutation).
+	// minted is the total this mint creates; computed once and reused for the
+	// cap check, the rate pre-check, and the post-apply window update.
+	var minted int64
 	if foundMint != nil {
 		// Quorum: count approvals that are in the signers set.
 		signerSet := make(map[string]bool, len(foundMint.Signers))
@@ -86,17 +89,13 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 			return reject(base, "MINT_QUORUM_UNMET")
 		}
 
-		// Cap check: compute total minted by this op.
-		var minted int64
-		for _, op := range foundMint.Body {
-			if op.Kind == ir.OpCredit {
-				a, err := resolveAmount(op.Amount, args)
-				if err != "" {
-					return reject(base, err)
-				}
-				minted += a
-			}
+		// Cap check: total minted by this op. sumMinted rejects on int64
+		// overflow so a multi-credit body cannot wrap past the cap.
+		m, reason := sumMinted(foundMint.Body, args)
+		if reason != "" {
+			return reject(base, reason)
 		}
+		minted = m
 		// Overflow-safe cap check: since amounts and supply are now ≥ 0 and
 		// supply ≤ cap, use subtraction to avoid int64 overflow.
 		if foundMint.Cap >= 0 && minted > foundMint.Cap-st.Supply {
@@ -163,7 +162,11 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 				return reject(base, aerr)
 			}
 			snap.Balances[from] -= amt
-			snap.Balances[to] += amt
+			to2, ok := addChecked(snap.Balances[to], amt)
+			if !ok {
+				return reject(base, "OVERFLOW")
+			}
+			snap.Balances[to] = to2
 
 		case ir.OpCredit:
 			acct, aerr := resolveAccount(op.Account, ctx, args)
@@ -174,8 +177,16 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 			if aerr != "" {
 				return reject(base, aerr)
 			}
-			snap.Balances[acct] += amt
-			snap.Supply += amt
+			bal2, ok := addChecked(snap.Balances[acct], amt)
+			if !ok {
+				return reject(base, "OVERFLOW")
+			}
+			sup2, ok := addChecked(snap.Supply, amt)
+			if !ok {
+				return reject(base, "OVERFLOW")
+			}
+			snap.Balances[acct] = bal2
+			snap.Supply = sup2
 
 		case ir.OpDebit:
 			acct, aerr := resolveAccount(op.Account, ctx, args)
@@ -192,16 +203,7 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 	}
 
 	if foundMint != nil && foundMint.Rate != nil {
-		var minted int64
-		for _, op := range foundMint.Body {
-			if op.Kind == ir.OpCredit {
-				amt, aerr := resolveAmount(op.Amount, args)
-				if aerr != "" {
-					return reject(base, aerr)
-				}
-				minted += amt
-			}
-		}
+		// minted was validated (and overflow-checked) in the pre-check above.
 		window, ok := snap.MintWindows[foundMint.Name]
 		if !ok || ctx.Now >= window.Start+foundMint.Rate.WindowSeconds {
 			window = state.MintWindow{Start: ctx.Now}
@@ -287,6 +289,39 @@ func resolveAccount(id string, ctx Context, args map[string]any) (string, string
 		return "", "BAD_ARG"
 	}
 	return s, ""
+}
+
+// addChecked returns a+b and reports whether the sum stayed within int64 range.
+// Overflow occurs only when both operands share a sign and the result flips it.
+func addChecked(a, b int64) (int64, bool) {
+	s := a + b
+	if (a > 0 && b > 0 && s < 0) || (a < 0 && b < 0 && s >= 0) {
+		return 0, false
+	}
+	return s, true
+}
+
+// sumMinted totals the credited amounts in a mint body, resolving each from
+// args. It returns ("" reason) on success or a reject reason ("BAD_ARG" or
+// "MINT_OVERFLOW") on failure. Overflow-checking here is what keeps a
+// multi-credit body from wrapping int64 past the declared cap.
+func sumMinted(body []ir.Op, args map[string]any) (int64, string) {
+	var minted int64
+	for _, op := range body {
+		if op.Kind != ir.OpCredit {
+			continue
+		}
+		a, err := resolveAmount(op.Amount, args)
+		if err != "" {
+			return 0, err
+		}
+		sum, ok := addChecked(minted, a)
+		if !ok {
+			return 0, "MINT_OVERFLOW"
+		}
+		minted = sum
+	}
+	return minted, ""
 }
 
 // resolveAmount maps an identifier to an int64 amount from args.

@@ -45,6 +45,12 @@ type RugSurfaceReport struct {
 	NoFee bool
 	// SupplyHardCapped is true when every declared mint has a non-negative cap.
 	SupplyHardCapped bool
+	// hasError is set by Check to true iff any Error-severity diagnostic was
+	// produced. It is the authoritative safety gate: a report is safe only when
+	// EVERY check passed, not just the mint-surface flags above. Without it,
+	// capability-lane and conservation-coverage violations (which have no
+	// corresponding flag) would render a clean badge on a rejected contract.
+	hasError bool
 }
 
 // RugSurfaceProof is the stable, machine-checkable form of the trust badge.
@@ -74,6 +80,12 @@ func (r RugSurfaceReport) Clean() bool {
 // Safe returns true when the report contains no disclosed unsafe power in the
 // v1 surface. Bounded, quorum-gated mints are safe but not empty-surface.
 func (r RugSurfaceReport) Safe() bool {
+	// Any Error diagnostic from Check (e.g. a capability-lane or
+	// conservation-coverage violation) makes the contract unsafe, even when
+	// every mint-surface flag is green.
+	if r.hasError {
+		return false
+	}
 	safe := r.NoHiddenMint && r.SupplyHardCapped && r.NoDiscretionaryPayout && r.NoFreeze && r.NoFee
 	if safe {
 		for _, m := range r.Mints {
@@ -131,7 +143,11 @@ func (r RugSurfaceReport) Badge() string {
 	b.WriteString("\n")
 
 	if r.Clean() {
-		b.WriteString("   declares NO powers — provably can't mint, drain, freeze, or fee. Empty rug surface.\n")
+		if r.Safe() {
+			b.WriteString("   declares NO powers — provably can't mint, drain, freeze, or fee. Empty rug surface.\n")
+		} else {
+			b.WriteString("   no mint capability declared, but static checks failed — see the diagnostics above.\n")
+		}
 	} else {
 		for _, m := range r.Mints {
 			signerList := strings.Join(m.Signers, ", ")
@@ -187,7 +203,7 @@ func (r RugSurfaceReport) Badge() string {
 	}
 
 	b.WriteString("\n")
-	if r.Safe() || r.Clean() {
+	if r.Safe() {
 		b.WriteString("   → a holder can verify: nobody mints past the cap, nobody mints without quorum, no backdoor.\n")
 	} else {
 		b.WriteString("   ⚠ UNSAFE — this contract declares powers that can rug holders (see the ✗ / ⚠ lines above). This is NOT a clean trust badge.\n")
