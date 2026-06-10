@@ -161,7 +161,7 @@ Run the tests (the thesis is a regression gate in `acceptance_test.go`):
 go test ./...
 ```
 
-> **Build note:** v1 builds against a local checkout of `gotreesitter` via a `go.mod` `replace`. Pinning a published version for clean external builds is a tracked follow-up.
+> **Build note:** v1 pins the published [`gotreesitter`](https://github.com/odvcencio/gotreesitter) `v0.20.2` — no `replace` directive, so `go build ./...` works from a clean external checkout.
 
 ## Status — v1 (tracer bullet)
 
