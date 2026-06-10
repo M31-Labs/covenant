@@ -65,8 +65,14 @@ type RugSurfaceProof struct {
 	NoFreeze              bool          `json:"no_freeze"`
 	NoFee                 bool          `json:"no_fee"`
 	SupplyHardCapped      bool          `json:"supply_hard_capped"`
-	Safe                  bool          `json:"safe"`
-	EmptyRugSurface       bool          `json:"empty_rug_surface"`
+	// TotalMintCap is the maximum supply mintable across ALL declared mints —
+	// the holder's max-inflation number. -1 means unbounded (an uncapped mint).
+	TotalMintCap int64 `json:"total_mint_cap"`
+	// RecipientsRuntimeBound is true when minted-token destinations are set at
+	// call time (always so in v1), so the badge cannot prove where they go.
+	RecipientsRuntimeBound bool `json:"recipients_runtime_bound"`
+	Safe                   bool `json:"safe"`
+	EmptyRugSurface        bool `json:"empty_rug_surface"`
 }
 
 // Clean returns true when ZERO mint powers are declared — a pure transfer-only
@@ -97,21 +103,41 @@ func (r RugSurfaceReport) Safe() bool {
 	return safe
 }
 
+// TotalMintCap returns the maximum supply mintable across all declared mints,
+// or -1 when any mint is uncapped or the sum would overflow int64. This is the
+// holder's max-inflation number: the most new supply the contract can ever create.
+func (r RugSurfaceReport) TotalMintCap() int64 {
+	var total int64
+	for _, m := range r.Mints {
+		if m.Cap < 0 {
+			return -1 // an uncapped mint makes the aggregate unbounded
+		}
+		sum := total + m.Cap
+		if sum < total { // int64 overflow
+			return -1
+		}
+		total = sum
+	}
+	return total
+}
+
 // Proof returns the canonical machine-readable rug-surface proof.
 func (r RugSurfaceReport) Proof() RugSurfaceProof {
 	mints := make([]MintSurface, len(r.Mints))
 	copy(mints, r.Mints)
 	return RugSurfaceProof{
-		Schema:                "m31labs.covenant.rug_surface.v1",
-		Contract:              r.Contract,
-		Mints:                 mints,
-		NoHiddenMint:          r.NoHiddenMint,
-		NoDiscretionaryPayout: r.NoDiscretionaryPayout,
-		NoFreeze:              r.NoFreeze,
-		NoFee:                 r.NoFee,
-		SupplyHardCapped:      r.SupplyHardCapped,
-		Safe:                  r.Safe(),
-		EmptyRugSurface:       r.Clean(),
+		Schema:                 "m31labs.covenant.rug_surface.v1",
+		Contract:               r.Contract,
+		Mints:                  mints,
+		NoHiddenMint:           r.NoHiddenMint,
+		NoDiscretionaryPayout:  r.NoDiscretionaryPayout,
+		NoFreeze:               r.NoFreeze,
+		NoFee:                  r.NoFee,
+		SupplyHardCapped:       r.SupplyHardCapped,
+		TotalMintCap:           r.TotalMintCap(),
+		RecipientsRuntimeBound: len(r.Mints) > 0,
+		Safe:                   r.Safe(),
+		EmptyRugSurface:        r.Clean(),
 	}
 }
 
@@ -181,6 +207,21 @@ func (r RugSurfaceReport) Badge() string {
 				fmt.Fprintf(&b, "      %s\n", strings.Join(clauses, "  ·  "))
 			}
 		}
+
+		// Aggregate inflation ceiling across every mint — the holder's
+		// max-supply number. Shown only when there is more than one mint, since
+		// for a single mint it just restates the per-mint cap.
+		if len(r.Mints) > 1 {
+			if total := r.TotalMintCap(); total >= 0 {
+				fmt.Fprintf(&b, "\n   Total mintable across all mints: %s %s\n", formatInt(total), r.Mints[0].Unit)
+			} else {
+				b.WriteString("\n   Total mintable across all mints: UNCAPPED ⚠\n")
+			}
+		}
+
+		// Recipient disclosure: in v1 every mint credits a runtime-supplied
+		// recipient, so the badge cannot prove where minted tokens land.
+		b.WriteString("   note: recipient set at call time — the badge can't prove where minted tokens go\n")
 	}
 
 	b.WriteString("\n")

@@ -17,6 +17,10 @@ type Context struct {
 // Invoke executes one action on a contract atomically.
 // On success the state is updated and an OK Receipt is returned.
 // On any failure the state is left UNCHANGED and a !OK Receipt is returned.
+//
+// The flow is: resolve → guard (authority/quorum/cap/rate) → apply on a clone →
+// re-verify conservation → commit. Each stage is a focused helper so the
+// orchestration reads top-to-bottom and every reject leaves state untouched.
 func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any, ctx Context) Receipt {
 	base := Receipt{
 		Contract: c.Name,
@@ -25,213 +29,54 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 		Now:      ctx.Now,
 	}
 
-	// 1. Resolve action to a mint / transition / burn.
-	var (
-		foundMint       *ir.Mint
-		foundTransition *ir.Transition
-		foundBurn       *ir.Burn
-	)
-	for i := range c.Mints {
-		if c.Mints[i].Name == action {
-			foundMint = &c.Mints[i]
-			break
-		}
-	}
-	if foundMint == nil {
-		for i := range c.Transitions {
-			if c.Transitions[i].Name == action {
-				foundTransition = &c.Transitions[i]
-				break
-			}
-		}
-	}
-	if foundMint == nil && foundTransition == nil {
-		for i := range c.Burns {
-			if c.Burns[i].Name == action {
-				foundBurn = &c.Burns[i]
-				break
-			}
-		}
-	}
+	foundMint, foundTransition, foundBurn := resolveAction(c, action)
 	if foundMint == nil && foundTransition == nil && foundBurn == nil {
 		return reject(base, "UNKNOWN_ACTION")
 	}
 
-	// 1b. Reject any negative int64 argument — before any authority or cap check.
-	// A negative amount passed to a burn does `balance -= (-N)` = balance += N,
-	// which mints tokens from nothing (CRITICAL). A negative transfer drains
-	// the recipient. Reject all negative amounts unconditionally.
-	for _, v := range args {
-		if n, ok := v.(int64); ok && n < 0 {
-			return reject(base, "NEGATIVE_AMOUNT")
-		}
+	// Reject any negative int64 argument up front. A negative amount passed to a
+	// burn does `balance -= (-N)` = balance += N (mints from nothing, CRITICAL);
+	// a negative transfer drains the recipient. Reject unconditionally.
+	if reason := rejectNegativeArgs(args); reason != "" {
+		return reject(base, reason)
 	}
 
-	// 2. Authority / guard checks (BEFORE snapshot mutation).
-	// minted is the total this mint creates; computed once and reused for the
-	// cap check, the rate pre-check, and the post-apply window update.
+	// Guard checks BEFORE any mutation. minted is the mint's total, computed
+	// once and reused for the post-apply rate-window update.
 	var minted int64
-	if foundMint != nil {
-		// Quorum: count approvals that are in the signers set.
-		signerSet := make(map[string]bool, len(foundMint.Signers))
-		for _, s := range foundMint.Signers {
-			signerSet[s] = true
-		}
-		approved := 0
-		seen := make(map[string]bool)
-		for _, a := range ctx.Approvals {
-			if signerSet[a] && !seen[a] {
-				seen[a] = true
-				approved++
-			}
-		}
-		if approved < foundMint.Quorum {
-			return reject(base, "MINT_QUORUM_UNMET")
-		}
-
-		// Cap check: total minted by this op. sumMinted rejects on int64
-		// overflow so a multi-credit body cannot wrap past the cap.
-		m, reason := sumMinted(foundMint.Body, args)
+	switch {
+	case foundMint != nil:
+		m, reason := precheckMint(foundMint, st, ctx, args)
 		if reason != "" {
 			return reject(base, reason)
 		}
 		minted = m
-		// Overflow-safe cap check: since amounts and supply are now ≥ 0 and
-		// supply ≤ cap, use subtraction to avoid int64 overflow.
-		if foundMint.Cap >= 0 && minted > foundMint.Cap-st.Supply {
-			return reject(base, "MINT_CAP_EXCEEDED")
+	case foundTransition != nil:
+		if reason := checkAuthority(foundTransition.Authority, st, ctx, args); reason != "" {
+			return reject(base, reason)
 		}
-		if foundMint.TimelockSeconds > 0 && ctx.Now < foundMint.TimelockSeconds {
-			return reject(base, "MINT_TIMELOCK_PENDING")
-		}
-		if foundMint.Rate != nil {
-			if foundMint.Rate.WindowSeconds <= 0 || foundMint.Rate.Amount <= 0 {
-				return reject(base, "MINT_RATE_INVALID")
-			}
-			window, ok := st.MintWindows[foundMint.Name]
-			if !ok || ctx.Now >= window.Start+foundMint.Rate.WindowSeconds {
-				window = state.MintWindow{Start: ctx.Now}
-			}
-			if ctx.Now < window.Start {
-				return reject(base, "TIME_WENT_BACKWARD")
-			}
-			if minted > foundMint.Rate.Amount-window.Minted {
-				return reject(base, "MINT_RATE_EXCEEDED")
-			}
-		}
-	}
-
-	if foundTransition != nil || foundBurn != nil {
-		var authority string
-		if foundTransition != nil {
-			authority = foundTransition.Authority
-		} else {
-			authority = foundBurn.Authority
-		}
-		if reason := checkAuthority(authority, st, ctx, args); reason != "" {
+	default:
+		if reason := checkAuthority(foundBurn.Authority, st, ctx, args); reason != "" {
 			return reject(base, reason)
 		}
 	}
 
-	// 3. Operate on a SNAPSHOT.
+	// Operate on a SNAPSHOT so any failure can be discarded.
 	snap := st.Clone()
-
-	var body []ir.Op
-	switch {
-	case foundMint != nil:
-		body = foundMint.Body
-	case foundTransition != nil:
-		body = foundTransition.Body
-	default:
-		body = foundBurn.Body
+	body := capabilityBody(foundMint, foundTransition, foundBurn)
+	if reason := applyBody(body, snap, ctx, args); reason != "" {
+		return reject(base, reason)
 	}
-
-	for _, op := range body {
-		switch op.Kind {
-		case ir.OpMove:
-			from, ferr := resolveAccount(op.From, ctx, args)
-			if ferr != "" {
-				return reject(base, ferr)
-			}
-			to, terr := resolveAccount(op.To, ctx, args)
-			if terr != "" {
-				return reject(base, terr)
-			}
-			amt, aerr := resolveAmount(op.Amount, args)
-			if aerr != "" {
-				return reject(base, aerr)
-			}
-			snap.Balances[from] -= amt
-			to2, ok := addChecked(snap.Balances[to], amt)
-			if !ok {
-				return reject(base, "OVERFLOW")
-			}
-			snap.Balances[to] = to2
-
-		case ir.OpCredit:
-			acct, aerr := resolveAccount(op.Account, ctx, args)
-			if aerr != "" {
-				return reject(base, aerr)
-			}
-			amt, aerr := resolveAmount(op.Amount, args)
-			if aerr != "" {
-				return reject(base, aerr)
-			}
-			bal2, ok := addChecked(snap.Balances[acct], amt)
-			if !ok {
-				return reject(base, "OVERFLOW")
-			}
-			sup2, ok := addChecked(snap.Supply, amt)
-			if !ok {
-				return reject(base, "OVERFLOW")
-			}
-			snap.Balances[acct] = bal2
-			snap.Supply = sup2
-
-		case ir.OpDebit:
-			acct, aerr := resolveAccount(op.Account, ctx, args)
-			if aerr != "" {
-				return reject(base, aerr)
-			}
-			amt, aerr := resolveAmount(op.Amount, args)
-			if aerr != "" {
-				return reject(base, aerr)
-			}
-			snap.Balances[acct] -= amt
-			snap.Supply -= amt
-		}
-	}
-
 	if foundMint != nil && foundMint.Rate != nil {
-		// minted was validated (and overflow-checked) in the pre-check above.
-		window, ok := snap.MintWindows[foundMint.Name]
-		if !ok || ctx.Now >= window.Start+foundMint.Rate.WindowSeconds {
-			window = state.MintWindow{Start: ctx.Now}
-		}
-		window.Minted += minted
-		snap.MintWindows[foundMint.Name] = window
+		recordMintWindow(foundMint, snap, ctx, minted)
+	}
+	if reason := postCheckConservation(snap); reason != "" {
+		return reject(base, reason)
 	}
 
-	// 4. Post-checks on the snapshot.
-	for acct, bal := range snap.Balances {
-		if bal < 0 {
-			_ = acct
-			return reject(base, "INSUFFICIENT_BALANCE")
-		}
-	}
-	// Conservation: sum(Balances) must equal Supply.
-	var sumBal int64
-	for _, v := range snap.Balances {
-		sumBal += v
-	}
-	if sumBal != snap.Supply {
-		return reject(base, "CONSERVATION_VIOLATED")
-	}
-
-	// 5. Commit: write snapshot back into st.
+	// Commit: write the snapshot back into st.
 	deltas := computeDeltas(st, snap)
 	supplyDelta := snap.Supply - st.Supply
-
 	st.Balances = snap.Balances
 	st.Supply = snap.Supply
 	st.MintWindows = snap.MintWindows
@@ -242,6 +87,193 @@ func Invoke(c *ir.Contract, st *state.State, action string, args map[string]any,
 	r.SupplyDelta = supplyDelta
 	r.Hash = computeHash(&r)
 	return r
+}
+
+// resolveAction finds the named capability, returning a pointer to exactly one
+// of (mint, transition, burn) or all-nil when the action is unknown.
+func resolveAction(c *ir.Contract, action string) (*ir.Mint, *ir.Transition, *ir.Burn) {
+	for i := range c.Mints {
+		if c.Mints[i].Name == action {
+			return &c.Mints[i], nil, nil
+		}
+	}
+	for i := range c.Transitions {
+		if c.Transitions[i].Name == action {
+			return nil, &c.Transitions[i], nil
+		}
+	}
+	for i := range c.Burns {
+		if c.Burns[i].Name == action {
+			return nil, nil, &c.Burns[i]
+		}
+	}
+	return nil, nil, nil
+}
+
+// rejectNegativeArgs returns "NEGATIVE_AMOUNT" if any int64 argument is negative.
+func rejectNegativeArgs(args map[string]any) string {
+	for _, v := range args {
+		if n, ok := v.(int64); ok && n < 0 {
+			return "NEGATIVE_AMOUNT"
+		}
+	}
+	return ""
+}
+
+// capabilityBody returns the op body for whichever capability is non-nil.
+func capabilityBody(m *ir.Mint, tr *ir.Transition, b *ir.Burn) []ir.Op {
+	switch {
+	case m != nil:
+		return m.Body
+	case tr != nil:
+		return tr.Body
+	default:
+		return b.Body
+	}
+}
+
+// precheckMint runs the mint guard chain (quorum → cap → timelock → rate) and
+// returns the validated minted total, or a reject reason on the first failure.
+// No state is mutated.
+func precheckMint(m *ir.Mint, st *state.State, ctx Context, args map[string]any) (int64, string) {
+	// Quorum: count distinct approvals that are in the signers set.
+	signerSet := make(map[string]bool, len(m.Signers))
+	for _, s := range m.Signers {
+		signerSet[s] = true
+	}
+	approved := 0
+	seen := make(map[string]bool)
+	for _, a := range ctx.Approvals {
+		if signerSet[a] && !seen[a] {
+			seen[a] = true
+			approved++
+		}
+	}
+	if approved < m.Quorum {
+		return 0, "MINT_QUORUM_UNMET"
+	}
+
+	// sumMinted rejects on int64 overflow so a multi-credit body cannot wrap
+	// past the cap.
+	minted, reason := sumMinted(m.Body, args)
+	if reason != "" {
+		return 0, reason
+	}
+	// Overflow-safe cap check: amounts and supply are ≥ 0 and supply ≤ cap, so
+	// use subtraction to avoid int64 overflow.
+	if m.Cap >= 0 && minted > m.Cap-st.Supply {
+		return 0, "MINT_CAP_EXCEEDED"
+	}
+	if m.TimelockSeconds > 0 && ctx.Now < m.TimelockSeconds {
+		return 0, "MINT_TIMELOCK_PENDING"
+	}
+	if m.Rate != nil {
+		if m.Rate.WindowSeconds <= 0 || m.Rate.Amount <= 0 {
+			return 0, "MINT_RATE_INVALID"
+		}
+		window, ok := st.MintWindows[m.Name]
+		if !ok || ctx.Now >= window.Start+m.Rate.WindowSeconds {
+			window = state.MintWindow{Start: ctx.Now}
+		}
+		if ctx.Now < window.Start {
+			return 0, "TIME_WENT_BACKWARD"
+		}
+		if minted > m.Rate.Amount-window.Minted {
+			return 0, "MINT_RATE_EXCEEDED"
+		}
+	}
+	return minted, ""
+}
+
+// applyBody applies a capability's ops to the snapshot. Every value-increasing
+// step is overflow-checked. Returns "" on success or a reject reason; on a
+// reject the caller discards the snapshot so partial mutation never escapes.
+func applyBody(body []ir.Op, snap *state.State, ctx Context, args map[string]any) string {
+	for _, op := range body {
+		switch op.Kind {
+		case ir.OpMove:
+			from, ferr := resolveAccount(op.From, ctx, args)
+			if ferr != "" {
+				return ferr
+			}
+			to, terr := resolveAccount(op.To, ctx, args)
+			if terr != "" {
+				return terr
+			}
+			amt, aerr := resolveAmount(op.Amount, args)
+			if aerr != "" {
+				return aerr
+			}
+			snap.Balances[from] -= amt
+			to2, ok := addChecked(snap.Balances[to], amt)
+			if !ok {
+				return "OVERFLOW"
+			}
+			snap.Balances[to] = to2
+
+		case ir.OpCredit:
+			acct, aerr := resolveAccount(op.Account, ctx, args)
+			if aerr != "" {
+				return aerr
+			}
+			amt, aerr := resolveAmount(op.Amount, args)
+			if aerr != "" {
+				return aerr
+			}
+			bal2, ok := addChecked(snap.Balances[acct], amt)
+			if !ok {
+				return "OVERFLOW"
+			}
+			sup2, ok := addChecked(snap.Supply, amt)
+			if !ok {
+				return "OVERFLOW"
+			}
+			snap.Balances[acct] = bal2
+			snap.Supply = sup2
+
+		case ir.OpDebit:
+			acct, aerr := resolveAccount(op.Account, ctx, args)
+			if aerr != "" {
+				return aerr
+			}
+			amt, aerr := resolveAmount(op.Amount, args)
+			if aerr != "" {
+				return aerr
+			}
+			snap.Balances[acct] -= amt
+			snap.Supply -= amt
+		}
+	}
+	return ""
+}
+
+// recordMintWindow advances the rate-limit window with the minted amount.
+// minted was validated (and overflow-checked) in precheckMint.
+func recordMintWindow(m *ir.Mint, snap *state.State, ctx Context, minted int64) {
+	window, ok := snap.MintWindows[m.Name]
+	if !ok || ctx.Now >= window.Start+m.Rate.WindowSeconds {
+		window = state.MintWindow{Start: ctx.Now}
+	}
+	window.Minted += minted
+	snap.MintWindows[m.Name] = window
+}
+
+// postCheckConservation verifies no balance went negative and that the ledger
+// still sums to supply. Returns "" when the snapshot is sound.
+func postCheckConservation(snap *state.State) string {
+	for _, bal := range snap.Balances {
+		if bal < 0 {
+			return "INSUFFICIENT_BALANCE"
+		}
+	}
+	var sumBal int64
+	for _, v := range snap.Balances {
+		sumBal += v
+	}
+	if sumBal != snap.Supply {
+		return "CONSERVATION_VIOLATED"
+	}
+	return ""
 }
 
 // reject builds a failed Receipt with empty deltas and a computed hash.

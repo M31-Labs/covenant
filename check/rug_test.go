@@ -535,9 +535,11 @@ func TestBadgeNeverLies(t *testing.T) {
 	}
 }
 
-// TestImpossibleQuorumWarned: a mint whose quorum exceeds its signer count can
-// never fire. Check must emit a MINT_IMPOSSIBLE_QUORUM Warning (NOT Error).
-func TestImpossibleQuorumWarned(t *testing.T) {
+// TestImpossibleQuorumRejected: a mint whose quorum exceeds its signer count can
+// never fire — a deceptive surface (the badge's N-of-M reads as if N approvals
+// are possible). Check must REJECT it with a MINT_IMPOSSIBLE_QUORUM Error and the
+// report must not be Safe.
+func TestImpossibleQuorumRejected(t *testing.T) {
 	c := &ir.Contract{
 		Name: "BadToken",
 		Ledgers: []ir.Ledger{
@@ -552,29 +554,29 @@ func TestImpossibleQuorumWarned(t *testing.T) {
 		},
 	}
 
-	diagnostics, _ := Check(c)
+	diagnostics, report := Check(c)
 
 	found := false
 	for _, d := range diagnostics {
 		if d.Code == "MINT_IMPOSSIBLE_QUORUM" {
-			if d.Severity != diag.Warning {
-				t.Errorf("MINT_IMPOSSIBLE_QUORUM must be a Warning, got Severity=%d", d.Severity)
+			if d.Severity != diag.Error {
+				t.Errorf("MINT_IMPOSSIBLE_QUORUM must be an Error, got Severity=%d", d.Severity)
 			}
 			found = true
 		}
-		// Must not be an Error-level diagnostic for this code.
-		if d.Code == "MINT_IMPOSSIBLE_QUORUM" && d.Severity == diag.Error {
-			t.Error("MINT_IMPOSSIBLE_QUORUM must NOT be an Error")
-		}
 	}
 	if !found {
-		t.Errorf("want MINT_IMPOSSIBLE_QUORUM warning diagnostic, got: %v", diagnostics)
+		t.Errorf("want MINT_IMPOSSIBLE_QUORUM error diagnostic, got: %v", diagnostics)
+	}
+	if report.Safe() {
+		t.Error("report.Safe() must be false for an impossible-quorum mint")
 	}
 }
 
-// TestDuplicateSignersWarned: a mint whose Signers list contains duplicates
-// must emit a MINT_DUPLICATE_SIGNERS Warning (NOT Error).
-func TestDuplicateSignersWarned(t *testing.T) {
+// TestDuplicateSignersRejected: a mint whose Signers list contains duplicates
+// inflates the badge's N-of-M denominator (the runtime counts distinct signers).
+// Check must REJECT it with a MINT_DUPLICATE_SIGNERS Error.
+func TestDuplicateSignersRejected(t *testing.T) {
 	c := &ir.Contract{
 		Name: "BadToken",
 		Ledgers: []ir.Ledger{
@@ -585,26 +587,26 @@ func TestDuplicateSignersWarned(t *testing.T) {
 			{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3},
 		},
 		Mints: []ir.Mint{
-			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"admin", "admin"}, Line: 4},
+			{Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"admin", "admin", "other"}, Line: 4},
 		},
 	}
 
-	diagnostics, _ := Check(c)
+	diagnostics, report := Check(c)
 
 	found := false
 	for _, d := range diagnostics {
 		if d.Code == "MINT_DUPLICATE_SIGNERS" {
-			if d.Severity != diag.Warning {
-				t.Errorf("MINT_DUPLICATE_SIGNERS must be a Warning, got Severity=%d", d.Severity)
+			if d.Severity != diag.Error {
+				t.Errorf("MINT_DUPLICATE_SIGNERS must be an Error, got Severity=%d", d.Severity)
 			}
 			found = true
 		}
-		if d.Code == "MINT_DUPLICATE_SIGNERS" && d.Severity == diag.Error {
-			t.Error("MINT_DUPLICATE_SIGNERS must NOT be an Error")
-		}
 	}
 	if !found {
-		t.Errorf("want MINT_DUPLICATE_SIGNERS warning diagnostic, got: %v", diagnostics)
+		t.Errorf("want MINT_DUPLICATE_SIGNERS error diagnostic, got: %v", diagnostics)
+	}
+	if report.Safe() {
+		t.Error("report.Safe() must be false for a duplicate-signers mint")
 	}
 }
 
@@ -723,4 +725,108 @@ func TestBadgeUnsafeForCleanContractWithBadTransition(t *testing.T) {
 	if !strings.Contains(badge, "UNSAFE") {
 		t.Errorf("badge must render UNSAFE:\n%s", badge)
 	}
+}
+
+// safeMint builds a minimal one-mint contract with the given mint, wrapped in a
+// conserving ledger/supply so only the mint under test drives the verdict.
+func safeMintContract(name string, m ir.Mint) *ir.Contract {
+	return &ir.Contract{
+		Name:       name,
+		Ledgers:    []ir.Ledger{{Name: "balances", Unit: "TOK", Line: 1}},
+		Supply:     &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3}},
+		Mints:      []ir.Mint{m},
+	}
+}
+
+// TestQuorumTooLowRejected: a 1-of-1 mint is capped and disclosed but one key can
+// fire it unilaterally. Policy (user decision) is to reject it: quorum must be >= 2.
+func TestQuorumTooLowRejected(t *testing.T) {
+	c := safeMintContract("SoloMint", ir.Mint{
+		Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 1, Signers: []string{"founder"}, Line: 4,
+	})
+	ds, report := Check(c)
+	if !hasCodeErr(ds, "MINT_QUORUM_TOO_LOW") {
+		t.Errorf("want MINT_QUORUM_TOO_LOW error; got: %v", ds)
+	}
+	if report.Safe() {
+		t.Error("a 1-of-1 mint must not be Safe()")
+	}
+}
+
+// TestUnitMismatchRejected: a mint that creates a different unit than the supply
+// tracks is a misleading surface. Reject with MINT_UNIT_MISMATCH.
+func TestUnitMismatchRejected(t *testing.T) {
+	c := safeMintContract("MismatchedUnits", ir.Mint{
+		Name: "issue", Cap: 1_000_000, Unit: "GOLD", Quorum: 2, Signers: []string{"a", "b"}, Line: 4,
+	})
+	ds, _ := Check(c)
+	if !hasCodeErr(ds, "MINT_UNIT_MISMATCH") {
+		t.Errorf("want MINT_UNIT_MISMATCH error (mint unit GOLD != supply unit TOK); got: %v", ds)
+	}
+}
+
+// TestDeadCapRejected: a cap of 0 can never mint — a deceptive surface, same class
+// as impossible-quorum. Reject with MINT_DEAD.
+func TestDeadCapRejected(t *testing.T) {
+	c := safeMintContract("DeadMint", ir.Mint{
+		Name: "issue", Cap: 0, Unit: "TOK", Quorum: 2, Signers: []string{"a", "b"}, Line: 4,
+	})
+	ds, _ := Check(c)
+	if !hasCodeErr(ds, "MINT_DEAD") {
+		t.Errorf("want MINT_DEAD error (cap 0 can never mint); got: %v", ds)
+	}
+}
+
+// TestAggregateMintCap: the proof and badge disclose the total mintable across
+// ALL mints, so a holder sees max possible inflation — not just per-mint caps.
+func TestAggregateMintCap(t *testing.T) {
+	c := &ir.Contract{
+		Name:       "MultiMint",
+		Ledgers:    []ir.Ledger{{Name: "balances", Unit: "TOK", Line: 1}},
+		Supply:     &ir.Supply{Name: "total", Unit: "TOK", Line: 2},
+		Invariants: []ir.Invariant{{Kind: "conserves", Ledger: "balances", Supply: "total", Line: 3}},
+		Mints: []ir.Mint{
+			{Name: "seed", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"a", "b"}, Line: 4},
+			{Name: "grant", Cap: 2_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"a", "b"}, Line: 5},
+		},
+	}
+	ds, report := Check(c)
+	for _, d := range ds {
+		if d.Severity == diag.Error {
+			t.Fatalf("setup contract must be clean, got error: %s", d.Teach())
+		}
+	}
+	if got := report.Proof().TotalMintCap; got != 3_000_000 {
+		t.Errorf("TotalMintCap=%d, want 3000000", got)
+	}
+	if badge := report.Badge(); !strings.Contains(badge, "3,000,000") {
+		t.Errorf("badge must disclose aggregate cap 3,000,000:\n%s", badge)
+	}
+}
+
+// TestRecipientDisclosure: minted-token destinations are a runtime arg, so the
+// badge can't prove where they go. The proof discloses this; the badge notes it.
+func TestRecipientDisclosure(t *testing.T) {
+	c := safeMintContract("Disclosed", ir.Mint{
+		Name: "issue", Cap: 1_000_000, Unit: "TOK", Quorum: 2, Signers: []string{"a", "b"}, Line: 4,
+		Body: []ir.Op{{Kind: ir.OpCredit, Account: "recipient", Amount: "amount", Line: 5}},
+	})
+	_, report := Check(c)
+	if !report.Proof().RecipientsRuntimeBound {
+		t.Error("proof must disclose RecipientsRuntimeBound=true for v1 mints")
+	}
+	if badge := report.Badge(); !strings.Contains(badge, "recipient set at call time") {
+		t.Errorf("badge must note runtime-bound recipients:\n%s", badge)
+	}
+}
+
+// hasCodeErr reports whether ds contains an Error-severity diagnostic with code.
+func hasCodeErr(ds []diag.Diagnostic, code string) bool {
+	for _, d := range ds {
+		if d.Code == code && d.Severity == diag.Error {
+			return true
+		}
+	}
+	return false
 }

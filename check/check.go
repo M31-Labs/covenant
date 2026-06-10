@@ -43,17 +43,30 @@ func Check(c *ir.Contract) ([]diag.Diagnostic, RugSurfaceReport) {
 
 	// --- 2. Mint-safety checks ---
 
+	var supplyUnit string
+	if c.Supply != nil {
+		supplyUnit = c.Supply.Unit
+	}
 	for _, m := range c.Mints {
 		if d := checkMintCap(m); d != nil {
 			ds = append(ds, *d)
 		}
+		if d := checkMintDead(m); d != nil {
+			ds = append(ds, *d)
+		}
 		if d := checkMintQuorum(m); d != nil {
+			ds = append(ds, *d)
+		}
+		if d := checkMintQuorumTooLow(m); d != nil {
 			ds = append(ds, *d)
 		}
 		if d := checkMintImpossibleQuorum(m); d != nil {
 			ds = append(ds, *d)
 		}
 		if d := checkMintDuplicateSigners(m); d != nil {
+			ds = append(ds, *d)
+		}
+		if d := checkMintUnit(m, supplyUnit); d != nil {
 			ds = append(ds, *d)
 		}
 		if d := checkMintRate(m); d != nil {
@@ -192,6 +205,22 @@ func checkMintCap(m ir.Mint) *diag.Diagnostic {
 	return nil
 }
 
+// checkMintDead returns MINT_DEAD when a mint is capped at zero — it can never
+// mint anything, so it is a deceptive surface (same class as impossible quorum).
+func checkMintDead(m ir.Mint) *diag.Diagnostic {
+	if m.Cap == 0 {
+		return &diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     m.Line,
+			Code:     "MINT_DEAD",
+			Message:  fmt.Sprintf("mint %q is capped at 0 and can never mint", m.Name),
+			Why:      "a mint that can never fire is a deceptive surface — the badge lists a power that does not exist",
+			Fix:      "remove the dead mint, or set a positive cap, e.g. `cap 1_000_000 TOKEN`",
+		}
+	}
+	return nil
+}
+
 // checkMintQuorum returns MINT_NO_QUORUM when a mint requires no approvers.
 func checkMintQuorum(m ir.Mint) *diag.Diagnostic {
 	if m.Quorum < 1 {
@@ -207,37 +236,71 @@ func checkMintQuorum(m ir.Mint) *diag.Diagnostic {
 	return nil
 }
 
-// checkMintImpossibleQuorum returns MINT_IMPOSSIBLE_QUORUM (Warning) when the
+// checkMintQuorumTooLow returns MINT_QUORUM_TOO_LOW for a 1-of-1 mint. A capped,
+// disclosed mint that a single key can fire unilaterally has no check-and-balance
+// — Covenant requires at least two approvers so no one key can mint alone.
+func checkMintQuorumTooLow(m ir.Mint) *diag.Diagnostic {
+	if m.Quorum == 1 {
+		return &diag.Diagnostic{
+			Severity: diag.Error,
+			Line:     m.Line,
+			Code:     "MINT_QUORUM_TOO_LOW",
+			Message:  fmt.Sprintf("mint %q needs at least 2 approvers (got quorum 1)", m.Name),
+			Why:      "a single key that can mint unilaterally up to the cap is a centralized rug risk, even when capped and disclosed",
+			Fix:      "require at least two approvers, e.g. `by approval 2 of { founder, treasurer }`",
+		}
+	}
+	return nil
+}
+
+// checkMintUnit returns MINT_UNIT_MISMATCH when a mint creates a different unit
+// than the supply tracks. A mismatched unit is a misleading surface: the cap and
+// rate read as constraining the token when they constrain something else.
+func checkMintUnit(m ir.Mint, supplyUnit string) *diag.Diagnostic {
+	if supplyUnit == "" || m.Unit == "" || m.Unit == supplyUnit {
+		return nil
+	}
+	return &diag.Diagnostic{
+		Severity: diag.Error,
+		Line:     m.Line,
+		Code:     "MINT_UNIT_MISMATCH",
+		Message:  fmt.Sprintf("mint %q creates %q but supply is tracked in %q", m.Name, m.Unit, supplyUnit),
+		Why:      "a mint must create the same unit the supply conserves, or its cap and rate constrain the wrong thing",
+		Fix:      fmt.Sprintf("change the mint unit to `%s`", supplyUnit),
+	}
+}
+
+// checkMintImpossibleQuorum returns MINT_IMPOSSIBLE_QUORUM (Error) when the
 // quorum exceeds the number of declared signers — the mint can never fire.
-// This is safe but deceptive: the badge's N-of-M reads as if N approvals are
-// possible, when in fact the mint is permanently locked.
+// Safe in isolation but deceptive: the badge's N-of-M reads as if N approvals
+// are possible when the mint is permanently locked, so it is rejected.
 func checkMintImpossibleQuorum(m ir.Mint) *diag.Diagnostic {
 	if m.Quorum > len(m.Signers) {
 		return &diag.Diagnostic{
-			Severity: diag.Warning,
+			Severity: diag.Error,
 			Line:     m.Line,
 			Code:     "MINT_IMPOSSIBLE_QUORUM",
 			Message:  fmt.Sprintf("mint %q requires %d approvals but only has %d signers — it can never fire", m.Name, m.Quorum, len(m.Signers)),
-			Why:      "this mint requires more approvals than it has signers — it can never fire (safe, but the badge's N-of-M reads as deceptive)",
+			Why:      "this mint requires more approvals than it has signers — it can never fire, and the badge's N-of-M reads as deceptive",
 			Fix:      "set quorum ≤ number of signers",
 		}
 	}
 	return nil
 }
 
-// checkMintDuplicateSigners returns MINT_DUPLICATE_SIGNERS (Warning) when the
+// checkMintDuplicateSigners returns MINT_DUPLICATE_SIGNERS (Error) when the
 // Signers list contains repeated entries. The runtime counts distinct signers,
-// so the effective quorum is lower than the badge implies.
+// so the effective quorum is lower than the badge's N-of-M implies — rejected.
 func checkMintDuplicateSigners(m ir.Mint) *diag.Diagnostic {
 	seen := make(map[string]bool, len(m.Signers))
 	for _, s := range m.Signers {
 		if seen[s] {
 			return &diag.Diagnostic{
-				Severity: diag.Warning,
+				Severity: diag.Error,
 				Line:     m.Line,
 				Code:     "MINT_DUPLICATE_SIGNERS",
 				Message:  fmt.Sprintf("mint %q lists signer %q more than once", m.Name, s),
-				Why:      "a signer is listed more than once; the runtime counts distinct signers, so the effective quorum is lower than the badge implies",
+				Why:      "a signer is listed more than once; the runtime counts distinct signers, so the effective quorum is lower than the badge's N-of-M implies",
 				Fix:      "list each signer once",
 			}
 		}

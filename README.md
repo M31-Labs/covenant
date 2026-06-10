@@ -67,10 +67,17 @@ $ covenant rugsurface examples/community_token.cov --json
   "no_freeze": true,
   "no_fee": true,
   "supply_hard_capped": true,
+  "total_mint_cap": 1000000,
+  "recipients_runtime_bound": true,
   "safe": true,
   "empty_rug_surface": false
 }
 ```
+
+`total_mint_cap` is the holder's max-inflation number — the most new supply the
+contract can ever create across **every** declared mint (`-1` = unbounded).
+`recipients_runtime_bound` discloses that mint destinations are set at call time,
+so the badge cannot prove *where* minted tokens go.
 
 The guarantees are enforced, not advisory:
 
@@ -97,7 +104,12 @@ total supply nets to zero.
 
 A mint that omits its hard cap also parses into the checker and fails with a
 teaching diagnostic (`MINT_UNCAPPED`) instead of degrading into a generic syntax
-error.
+error. The same lane rejects every *deceptive* mint surface: a single-signer
+mint (`MINT_QUORUM_TOO_LOW` — quorum must be ≥ 2 so no one key mints alone), a
+quorum larger than the signer set (`MINT_IMPOSSIBLE_QUORUM`), a duplicated signer
+that inflates the N-of-M (`MINT_DUPLICATE_SIGNERS`), a zero cap that can never
+fire (`MINT_DEAD`), and a mint whose unit doesn't match the supply
+(`MINT_UNIT_MISMATCH`).
 ❌ this transition creates or destroys value  (line 8, col 9)
    why:  a transition that changes total supply is a hidden mint/burn — the most common way tokens get rugged
    fix:  use `move` to transfer existing value, or put supply changes in a declared `mint`/`burn` capability
