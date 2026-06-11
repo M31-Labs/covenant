@@ -117,6 +117,44 @@ fire (`MINT_DEAD`), and a mint whose unit doesn't match the supply
 
 ---
 
+## Verify the badge yourself — don't trust, check
+
+A badge only flips the market default if the counterparty can **independently**
+confirm it. `covenant verify` recomputes the rug-surface proof from source and
+checks it against the issuer's published proof — so a holder, wallet, explorer,
+or CI confirms the badge corresponds to the source with **zero trust in the
+issuer.**
+
+```console
+$ covenant verify CommunityToken.cov --proof badge.json
+🔍 CommunityToken — proof verification
+   source sha256:         ebec6bf3a92a7f29…
+   computed proof sha256: 88b91b763b42a90d…
+   claimed proof sha256:  88b91b763b42a90d…
+   ✓ VERIFIED — this source produces exactly the claimed rug-surface proof, and it is safe.
+```
+
+It catches the obvious fraud — a project that shows a clean badge but ships a
+different, draining contract:
+
+```console
+$ covenant verify TheRealDrainingContract.cov --proof CleanLookingBadge.json
+   ✗ MISMATCH — the claimed proof does NOT correspond to this source:
+       - contract: claimed CommunityToken, computed NetZeroDrain
+       - safe: claimed true, computed false
+   Do not trust the claimed badge.        # exit 1
+```
+
+If you only have the source and the **anchored** `proof_sha256` (e.g. read from
+the on-chain registry that `covenant chainplan` targets), verify against the hash
+directly — this is the seam between the rung-1 language guarantee and rung-2
+anchoring:
+
+```sh
+covenant verify CommunityToken.cov --proof-hash 88b91b763b42a90d…
+covenant verify CommunityToken.cov --proof badge.json --json   # machine-readable verdict
+```
+
 ## How it works
 
 A contract is an explicit, governed, audited **state machine over money-typed state** with **total value conservation** and **atomic settlement**. The pipeline:
@@ -151,6 +189,7 @@ covenant check       examples/community_token.cov
 covenant rugsurface  examples/community_token.cov
 covenant explain     examples/community_token.cov
 covenant chainplan   examples/community_token.cov --target=evm-sepolia
+covenant verify      examples/community_token.cov --proof badge.json
 covenant run         examples/community_token.cov issue recipient=alice amount=500000 \
                        --caller=founder --now=1 --approvals=founder,treasurer
 ```

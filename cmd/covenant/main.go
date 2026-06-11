@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"m31labs.dev/covenant/interp"
 	"m31labs.dev/covenant/ir"
 	"m31labs.dev/covenant/state"
+	"m31labs.dev/covenant/verify"
 )
 
 // ── entrypoint ────────────────────────────────────────────────────────────────
@@ -57,6 +60,15 @@ func dispatch(args []string) (string, int) {
 			return "covenant chainplan: missing <file>\n", 1
 		}
 		return runChainplan(path, target, jsonOut)
+	case "verify":
+		if len(args) < 2 {
+			return "covenant verify: missing <file>\n", 1
+		}
+		path, proofPath, proofHash, jsonOut := parseVerifyArgs(args[1:])
+		if path == "" {
+			return "covenant verify: missing <file>\n", 1
+		}
+		return runVerify(path, proofPath, proofHash, jsonOut)
 	case "run":
 		if len(args) < 3 {
 			return "covenant run: usage: covenant run <file> <action> [key=value ...] [--caller=X] [--now=N] [--approvals=a,b]\n", 1
@@ -99,6 +111,123 @@ func runChainplan(path, target string, jsonOut bool) (string, int) {
 	}
 	sb.WriteString(plan.Text())
 	return sb.String(), exitCode
+}
+
+// ── verify ───────────────────────────────────────────────────────────────────
+
+// runVerify recomputes the rug-surface proof from source and checks it against a
+// claimed proof (--proof) and/or anchored proof hash (--proof-hash). It is the
+// trustless check: a holder confirms a badge corresponds to the source without
+// trusting the issuer. Exit 0 only on VERIFIED.
+func runVerify(path, proofPath, proofHash string, jsonOut bool) (string, int) {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("covenant verify: cannot read %q: %v\n", path, err), 1
+	}
+
+	var claimed *check.RugSurfaceProof
+	if proofPath != "" {
+		var pb []byte
+		var perr error
+		if proofPath == "-" {
+			pb, perr = io.ReadAll(os.Stdin)
+		} else {
+			pb, perr = os.ReadFile(proofPath)
+		}
+		if perr != nil {
+			return fmt.Sprintf("covenant verify: cannot read proof %q: %v\n", proofPath, perr), 1
+		}
+		var p check.RugSurfaceProof
+		if err := json.Unmarshal(pb, &p); err != nil {
+			return fmt.Sprintf("covenant verify: proof is not valid JSON: %v\n", err), 1
+		}
+		claimed = &p
+	}
+
+	res := verify.Verify(src, claimed, proofHash)
+
+	if jsonOut {
+		out, err := res.JSON()
+		if err != nil {
+			return fmt.Sprintf("covenant verify: cannot render JSON: %v\n", err), 1
+		}
+		return out, exitForStatus(res.Status)
+	}
+
+	var sb strings.Builder
+	name := res.Contract
+	if name == "" {
+		name = path
+	}
+	fmt.Fprintf(&sb, "🔍 %s — proof verification\n\n", name)
+	fmt.Fprintf(&sb, "   source sha256:         %s\n", res.SourceSHA256)
+	if res.ComputedProofSHA256 != "" {
+		fmt.Fprintf(&sb, "   computed proof sha256: %s\n", res.ComputedProofSHA256)
+	}
+	if res.ClaimedProofSHA256 != "" {
+		fmt.Fprintf(&sb, "   claimed proof sha256:  %s\n", res.ClaimedProofSHA256)
+	}
+	sb.WriteString("\n")
+	switch res.Status {
+	case verify.StatusVerified:
+		sb.WriteString("   ✓ VERIFIED — this source produces exactly the claimed rug-surface proof, and it is safe.\n")
+	case verify.StatusMismatch:
+		sb.WriteString("   ✗ MISMATCH — the claimed proof does NOT correspond to this source:\n")
+		for _, m := range res.Mismatches {
+			fmt.Fprintf(&sb, "       - %s\n", m)
+		}
+		sb.WriteString("   Do not trust the claimed badge.\n")
+	case verify.StatusUnsafe:
+		sb.WriteString("   ⚠ UNSAFE — the source is honestly described but declares powers that can rug holders.\n")
+		fmt.Fprintf(&sb, "   run `covenant explain %s` for the details.\n", path)
+	case verify.StatusError:
+		sb.WriteString("   ✗ ERROR — the source could not be parsed, so there is nothing to verify.\n")
+		for _, d := range res.Diagnostics {
+			if d.Severity == diag.Error {
+				fmt.Fprintf(&sb, "       %s\n", d.Message)
+				break
+			}
+		}
+	}
+	return sb.String(), exitForStatus(res.Status)
+}
+
+func exitForStatus(s verify.Status) int {
+	if s == verify.StatusVerified {
+		return 0
+	}
+	return 1
+}
+
+func parseVerifyArgs(args []string) (path, proofPath, proofHash string, jsonOut bool) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			jsonOut = true
+		case strings.HasPrefix(a, "--proof-hash="):
+			proofHash = strings.TrimPrefix(a, "--proof-hash=")
+		case a == "--proof-hash":
+			if i+1 < len(args) {
+				i++
+				proofHash = args[i]
+			}
+		case strings.HasPrefix(a, "--proof="):
+			proofPath = strings.TrimPrefix(a, "--proof=")
+		case a == "--proof":
+			if i+1 < len(args) {
+				i++
+				proofPath = args[i]
+			}
+		case strings.HasPrefix(a, "--"):
+			// ignore unknown flags
+		default:
+			if path == "" {
+				path = a
+			}
+		}
+	}
+	return path, proofPath, proofHash, jsonOut
 }
 
 // ── explain ──────────────────────────────────────────────────────────────────
@@ -554,6 +683,7 @@ USAGE
   covenant rugsurface <file> [--json]           print the trust badge or JSON proof
   covenant explain <file>                       explain the proof in plain language
   covenant chainplan <file> [--target=ID]       plan testnet anchoring
+  covenant verify <file> [--proof F] [--proof-hash H]  independently verify a published proof
   covenant run <file> <action> [key=value ...]  execute a contract action
               [--caller=X] [--now=N] [--approvals=a,b,c]
 
@@ -562,6 +692,8 @@ EXAMPLES
   covenant rugsurface examples/community_token.cov
   covenant explain examples/community_token.cov
   covenant chainplan examples/community_token.cov --target=evm-sepolia
+  covenant verify examples/community_token.cov --proof badge.json
+  covenant verify examples/community_token.cov --proof-hash 2f48ec08…
   covenant run examples/community_token.cov issue recipient=alice amount=500000 \
               --caller=founder --now=1 --approvals=founder,treasurer
 `

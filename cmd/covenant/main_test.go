@@ -12,6 +12,94 @@ import (
 
 const flagship = "../../examples/community_token.cov"
 
+// TestVerifyMatchingProof: a holder verifies the flagship source against the
+// issuer's published proof JSON — VERIFIED, exit 0.
+func TestVerifyMatchingProof(t *testing.T) {
+	proofJSON, code := runRugsurface(flagship, true)
+	if code != 0 {
+		t.Fatalf("setup: rugsurface --json exit %d:\n%s", code, proofJSON)
+	}
+	proofFile := writeTemp(t, "proof-*.json", proofJSON)
+
+	out, code := runVerify(flagship, proofFile, "", false)
+	if code != 0 {
+		t.Fatalf("expected exit 0 (VERIFIED), got %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "VERIFIED") {
+		t.Fatalf("expected VERIFIED in output:\n%s", out)
+	}
+}
+
+// TestVerifyTamperedProof: a published proof that doesn't match the source must
+// fail with MISMATCH and a non-zero exit, listing the offending field.
+func TestVerifyTamperedProof(t *testing.T) {
+	proofJSON, _ := runRugsurface(flagship, true)
+	tampered := strings.Replace(proofJSON, "\"total_mint_cap\": 1000000", "\"total_mint_cap\": 1", 1)
+	if tampered == proofJSON {
+		t.Fatal("setup: failed to tamper the proof JSON")
+	}
+	proofFile := writeTemp(t, "tampered-*.json", tampered)
+
+	out, code := runVerify(flagship, proofFile, "", false)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for MISMATCH, got 0:\n%s", out)
+	}
+	if !strings.Contains(out, "MISMATCH") {
+		t.Fatalf("expected MISMATCH in output:\n%s", out)
+	}
+}
+
+// TestVerifyUnsafeSource: verifying an unsafe source (no claim) reports UNSAFE
+// and exits non-zero.
+func TestVerifyUnsafeSource(t *testing.T) {
+	out, code := runVerify("../../examples/_bad_net_zero_drain.cov", "", "", false)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit for UNSAFE, got 0:\n%s", out)
+	}
+	if !strings.Contains(out, "UNSAFE") {
+		t.Fatalf("expected UNSAFE in output:\n%s", out)
+	}
+}
+
+// TestVerifyJSONOutput: --json emits a machine-readable result with the status.
+func TestVerifyJSONOutput(t *testing.T) {
+	proofJSON, _ := runRugsurface(flagship, true)
+	proofFile := writeTemp(t, "proof-*.json", proofJSON)
+
+	out, code := runVerify(flagship, proofFile, "", true)
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "why:") {
+		t.Fatalf("--json must not contain teaching text:\n%s", out)
+	}
+	var res struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("expected valid JSON: %v\n%s", err, out)
+	}
+	if res.Status != "VERIFIED" {
+		t.Fatalf("status=%q, want VERIFIED", res.Status)
+	}
+}
+
+// writeTemp writes content to a uniquely-named temp file and returns its path.
+func writeTemp(t *testing.T, pattern, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), pattern)
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("write temp: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close temp: %v", err)
+	}
+	return f.Name()
+}
+
 // TestCheckFlagshipPasses verifies the flagship contract passes all checks.
 func TestCheckFlagshipPasses(t *testing.T) {
 	out, code := runCheck(flagship)
